@@ -1,15 +1,11 @@
 name: Product site · GitHub Pages
 on:
   push:
-    branches: [dev, main]
-    paths: ['docs/**', 'package.json', 'pnpm-lock.yaml', '.github/workflows/pages.yml']
-  pull_request:
-    paths: ['docs/**', 'package.json', 'pnpm-lock.yaml', '.github/workflows/pages.yml']
-  workflow_dispatch:
+    branches: [main]
 permissions:
   contents: read
 concurrency:
-  group: pages-${{ github.event_name == 'pull_request' && github.ref || 'production' }}
+  group: pages-production
   cancel-in-progress: false
 jobs:
   build:
@@ -26,7 +22,6 @@ jobs:
         with:
           path: docs/.vitepress/dist
   deploy:
-    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     permissions:

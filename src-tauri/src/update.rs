@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
-use std::{io::Read, time::Duration};
-use tauri::AppHandle;
+use std::{
+    fs,
+    io::{Read, Write},
+    time::Duration,
+};
+use tauri::{AppHandle, Emitter};
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 #[derive(Deserialize)]
 struct Release {
@@ -25,6 +30,13 @@ pub struct UpdateInfo {
     notes: String,
     url: Option<String>,
     message: String,
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DownloadProgress {
+    downloaded: u64,
+    total: Option<u64>,
+    percent: Option<u8>,
 }
 fn valid_download(url: &str) -> bool {
     url.starts_with("https://github.com/yeyongzhi/onTime/releases/download/")
@@ -134,6 +146,106 @@ pub fn open_update_link(app: AppHandle, url: String) -> Result<(), String> {
     app.opener()
         .open_url(url, None::<&str>)
         .map_err(|e| format!("无法打开浏览器：{e}"))
+}
+
+#[tauri::command]
+pub async fn download_update(app: AppHandle, url: String) -> Result<Option<String>, String> {
+    if !valid_download(&url) {
+        return Err("只允许下载 onTime 官方仓库安装包".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let filename = url
+            .rsplit('/')
+            .next()
+            .filter(|name| !name.is_empty())
+            .unwrap_or("onTime-installer");
+        let Some(target) = app
+            .dialog()
+            .file()
+            .set_title("保存 onTime 更新安装包")
+            .set_file_name(filename)
+            .blocking_save_file()
+        else {
+            return Ok(None);
+        };
+        let target = target
+            .into_path()
+            .map_err(|e| format!("保存位置无效：{e}"))?;
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(180))
+            .user_agent("onTime-update-download")
+            .build()
+            .map_err(|e| e.to_string())?;
+        let mut response = client
+            .get(&url)
+            .send()
+            .map_err(|e| format!("下载安装包失败：{e}"))?
+            .error_for_status()
+            .map_err(|e| format!("下载安装包失败：{e}"))?;
+        let total = response.content_length();
+        const MAX_DOWNLOAD: u64 = 300 * 1024 * 1024;
+        if total.is_some_and(|size| size == 0 || size > MAX_DOWNLOAD) {
+            return Err("安装包大小无效或超过 300 MB 限制".into());
+        }
+        let mut temporary = target.clone().into_os_string();
+        temporary.push(format!(".ontime-{}.part", uuid::Uuid::new_v4()));
+        let temporary = std::path::PathBuf::from(temporary);
+        let result = (|| -> Result<(), String> {
+            let mut file =
+                fs::File::create(&temporary).map_err(|e| format!("无法创建下载文件：{e}"))?;
+            let mut downloaded = 0_u64;
+            let mut buffer = [0_u8; 64 * 1024];
+            loop {
+                let count = response
+                    .read(&mut buffer)
+                    .map_err(|e| format!("下载中断：{e}"))?;
+                if count == 0 {
+                    break;
+                }
+                downloaded += count as u64;
+                if downloaded > MAX_DOWNLOAD || total.is_some_and(|size| downloaded > size) {
+                    return Err("安装包大小异常，已停止下载".into());
+                }
+                file.write_all(&buffer[..count])
+                    .map_err(|e| format!("写入安装包失败：{e}"))?;
+                let percent = total
+                    .filter(|size| *size > 0)
+                    .map(|size| ((downloaded.saturating_mul(100) / size).min(100)) as u8);
+                let _ = app.emit(
+                    "update-download-progress",
+                    DownloadProgress {
+                        downloaded,
+                        total,
+                        percent,
+                    },
+                );
+            }
+            if total.is_some_and(|size| downloaded != size) {
+                return Err("安装包未完整下载".into());
+            }
+            file.flush().map_err(|e| format!("写入安装包失败：{e}"))?;
+            drop(file);
+            if target.exists() {
+                fs::remove_file(&target).map_err(|e| format!("无法替换目标文件：{e}"))?;
+            }
+            fs::rename(&temporary, &target).map_err(|e| format!("无法保存安装包：{e}"))?;
+            let _ = app.emit(
+                "update-download-progress",
+                DownloadProgress {
+                    downloaded,
+                    total,
+                    percent: Some(100),
+                },
+            );
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result.map(|()| Some(target.to_string_lossy().into_owned()))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 #[cfg(test)]
 mod tests {

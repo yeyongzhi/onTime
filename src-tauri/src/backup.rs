@@ -53,7 +53,7 @@ pub fn export_to(root: &Path, destination: &Path) -> Result<(), String> {
             "manifest.json".to_string(),
             serde_json::to_vec(&Manifest {
                 application: "onTime".into(),
-                format_version: 1,
+                format_version: 2,
                 created_at: chrono::Utc::now().timestamp(),
             })
             .map_err(err)?,
@@ -137,11 +137,18 @@ pub fn import_from(root: &Path, file: &Path) -> Result<String, String> {
     let entries = read_archive(file)?;
     let manifest: Manifest =
         serde_json::from_slice(entries.get("manifest.json").ok_or("缺少备份清单")?).map_err(err)?;
-    if manifest.application != "onTime" || manifest.format_version != 1 {
+    if manifest.application != "onTime" || ![1, 2].contains(&manifest.format_version) {
         return Err("不兼容的备份版本".into());
     }
     let mut snap: Snapshot =
         serde_json::from_slice(entries.get("snapshot.json").ok_or("缺少提醒数据")?).map_err(err)?;
+    if manifest.format_version == 1 {
+        for alarm in &mut snap.alarms {
+            if alarm.repeat == "monthly" && alarm.monthly_day == Some(31) {
+                alarm.monthly_day = Some(0);
+            }
+        }
+    }
     let config: serde_json::Value =
         serde_json::from_slice(entries.get("config.json").ok_or("缺少配置")?).map_err(err)?;
     if config.get("schemaVersion").and_then(|v| v.as_u64()) != Some(1) {
@@ -172,6 +179,19 @@ pub fn import_from(root: &Path, file: &Path) -> Result<String, String> {
         if t.id.is_empty() || !tag_ids.insert(&t.id) || t.name.trim().is_empty() {
             return Err("备份标签无效".into());
         }
+    }
+    let mut group_ids = std::collections::BTreeSet::new();
+    for g in &snap.groups {
+        if g.id.is_empty() || !group_ids.insert(&g.id) || g.name.trim().is_empty() {
+            return Err("备份分组无效".into());
+        }
+    }
+    if snap.alarms.iter().any(|a| {
+        a.group_id
+            .as_ref()
+            .is_some_and(|id| !group_ids.contains(id))
+    }) {
+        return Err("备份提醒的分组不存在".into());
     }
     let mut occurrence_ids = std::collections::BTreeSet::new();
     for o in &snap.occurrences {
@@ -208,9 +228,23 @@ pub fn import_from(root: &Path, file: &Path) -> Result<String, String> {
     let mut conn = storage::open(root)?;
     let tx = conn.transaction().map_err(err)?;
     tx.execute_batch(
-        "DELETE FROM alarms;DELETE FROM tags;DELETE FROM occurrences;DELETE FROM calendars;",
+        "DELETE FROM alarms;DELETE FROM groups;DELETE FROM tags;DELETE FROM occurrences;DELETE FROM calendars;",
     )
     .map_err(err)?;
+    for t in &snap.tags {
+        tx.execute(
+            "INSERT INTO tags(id,json) VALUES(?1,?2)",
+            rusqlite::params![t.id, serde_json::to_string(t).map_err(err)?],
+        )
+        .map_err(err)?;
+    }
+    for g in &snap.groups {
+        tx.execute(
+            "INSERT INTO groups(id,json) VALUES(?1,?2)",
+            rusqlite::params![g.id, serde_json::to_string(g).map_err(err)?],
+        )
+        .map_err(err)?;
+    }
     for a in &snap.alarms {
         tx.execute(
             "INSERT INTO alarms(id,json,next_at) VALUES(?1,?2,?3)",
@@ -222,20 +256,13 @@ pub fn import_from(root: &Path, file: &Path) -> Result<String, String> {
         )
         .map_err(err)?;
     }
-    for t in &snap.tags {
-        tx.execute(
-            "INSERT INTO tags VALUES(?1,?2)",
-            rusqlite::params![t.id, serde_json::to_string(t).map_err(err)?],
-        )
-        .map_err(err)?;
-    }
     for o in &mut snap.occurrences {
         if o.status == "ringing" {
             o.started_at = Some(chrono::Utc::now().timestamp());
             o.reason = "备份恢复".into();
         }
         tx.execute(
-            "INSERT INTO occurrences VALUES(?1,?2,?3,?4)",
+            "INSERT INTO occurrences(id,alarm_id,scheduled_at,json) VALUES(?1,?2,?3,?4)",
             rusqlite::params![
                 o.id,
                 o.alarm_id,
@@ -334,23 +361,36 @@ mod tests {
         storage::initialize(&root).unwrap();
         let conn = storage::open(&root).unwrap();
         let t = crate::domain::Tag {
+            created_at: Some(1234567890),
             id: "t".into(),
             name: "生活".into(),
             color: "#abcdef".into(),
         };
         conn.execute(
-            "INSERT INTO tags VALUES(?1,?2)",
+            "INSERT INTO tags(id,json) VALUES(?1,?2)",
             rusqlite::params![t.id, serde_json::to_string(&t).unwrap()],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO groups(id,json) VALUES(?1,?2)",
+            rusqlite::params![t.id, serde_json::to_string(&t).unwrap()],
+        )
+        .unwrap();
+        let a: crate::domain::Alarm = serde_json::from_value(serde_json::json!({"id":"a","title":"分组提醒","enabled":false,"kind":"timer","time":"09:00","date":null,"repeat":"daily","weekdays":[],"skipHolidays":false,"durationSeconds":60,"deadline":null,"sound":null,"volume":0.5,"gradual":true,"ringSeconds":60,"snoozeLimit":3,"tags":["t"],"groupId":"t","revision":1,"createdAt":1})).unwrap();
+        storage::save_alarm(&root, &a, None).unwrap();
         drop(conn);
         let archive = root.join("export.zip");
         export_to(&root, &archive).unwrap();
         let conn = storage::open(&root).unwrap();
-        conn.execute("DELETE FROM tags", []).unwrap();
+        conn.execute_batch("DELETE FROM tags;DELETE FROM groups;DELETE FROM alarms;")
+            .unwrap();
         drop(conn);
         import_from(&root, &archive).unwrap();
         assert_eq!(storage::snapshot(&root).unwrap().tags[0].name, "生活");
+        let restored = storage::snapshot(&root).unwrap();
+        assert_eq!(restored.groups[0].name, "生活");
+        assert_eq!(restored.alarms[0].group_id.as_deref(), Some("t"));
+        assert_eq!(restored.alarms[0].tags, vec!["t"]);
         let bad = root.join("bad.zip");
         fs::write(&bad, b"invalid archive").unwrap();
         assert!(import_from(&root, &bad).is_err());
@@ -365,6 +405,7 @@ mod tests {
         let archive = root.join("original.zip");
         export_to(&root, &archive).unwrap();
         let tag = crate::domain::Tag {
+            created_at: Some(1234567890),
             id: "keep".into(),
             name: "保留当前数据".into(),
             color: "#123456".into(),
@@ -372,7 +413,7 @@ mod tests {
         storage::open(&root)
             .unwrap()
             .execute(
-                "INSERT INTO tags VALUES(?1,?2)",
+                "INSERT INTO tags(id,json) VALUES(?1,?2)",
                 rusqlite::params![tag.id, serde_json::to_string(&tag).unwrap()],
             )
             .unwrap();

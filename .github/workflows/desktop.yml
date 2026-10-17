@@ -54,3 +54,35 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: onTime-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish preview release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}（预览版）
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          body: |
+            发布日期：2026-10-17
+
+            - ✨️ 支持单次、重复与倒计时提醒；重复规则覆盖每天、每周、每月、每季度和每年，并可设置生效日期范围。
+            - ✨️ 提醒到期时显示系统通知和响铃窗口；提醒、分组、标签及提醒历史保存在本地 SQLite，并支持历史筛选与分页。
+            - ✨️ 支持每日自动备份并保留最近 7 份备份，托盘菜单可快速创建 10 或 30 分钟倒计时。
+            - 🐛 修正重复提醒的月底与 31 号规则，并改善响铃窗口关闭时对并行提醒的处理。
+            - 🎨 改进提醒表单、列表、设置和分组/标签管理界面。
+
+            这是预览版本。首次使用或升级前，请先从“设置 → 备份”导出重要数据；遇到问题请通过 GitHub Issues 反馈。
+          files: release-assets/**
+          fail_on_unmatched_files: true

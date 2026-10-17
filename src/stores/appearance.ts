@@ -6,7 +6,7 @@ import { computed, reactive, watch } from 'vue'
 type Mode = 'light' | 'dark' | 'system'
 interface Appearance { mode: Mode; color: string; fontSize: number; radius: number; sidebarWidth: number }
 const key = 'ontime.appearance.v1'
-const defaults: Appearance = { mode: 'system', color: '#00b954', fontSize: 14, radius: 16, sidebarWidth: 240 }
+const defaults: Appearance = { mode: 'system', color: '#00b954', fontSize: 14, radius: 16, sidebarWidth: 140 }
 function normalize(value: Partial<Appearance>): Appearance {
   const number = (v: unknown, fallback: number, min: number, max: number) => typeof v === 'number' && Number.isFinite(v) ? Math.round(Math.min(max, Math.max(min, v))) : fallback
   return {

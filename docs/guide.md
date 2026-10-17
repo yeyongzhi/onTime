@@ -4,7 +4,7 @@
 
 前往 [下载页面](https://github.com/yeyongzhi/onTime/releases)，选择与你的系统匹配的安装包。Windows 使用 `.exe`，macOS 使用 `.dmg`；实际可用的版本以下载页面为准。
 
-macOS 安装包目前未完成 Developer ID 签名和公证。安装时请遵循系统提示及组织设备管理要求。
+Windows 安装包目前未签名，首次运行可能出现未知发布者提示。macOS 安装包目前未完成 Developer ID 签名和公证。请确认安装包来自项目的 GitHub Releases。
 
 ## 选择数据目录
 

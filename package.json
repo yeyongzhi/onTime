@@ -1,7 +1,7 @@
 {
   "name": "ontime",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.1-beta1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -15,6 +15,7 @@
     "docs:preview": "vitepress preview docs"
   },
   "dependencies": {
+    "@internationalized/date": "^3.12.4",
     "@lucide/vue": "^1.53.0",
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/api": "^2.12.1",

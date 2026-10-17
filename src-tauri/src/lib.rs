@@ -1,11 +1,10 @@
 mod audio;
-mod preferences;
 mod backup;
-mod calendar;
 mod clock;
 mod domain;
 mod engine;
 mod logging;
+mod preferences;
 mod storage;
 mod update;
 use std::{fs, path::PathBuf, sync::Mutex, time::Duration};
@@ -39,11 +38,15 @@ pub fn run() {
             let root = fs::read(bootstrap)
                 .ok()
                 .and_then(|b| serde_json::from_slice::<PathBuf>(&b).ok());
+            if let Some(path) = root.as_ref().filter(|path| path.join("data.db").is_file()) {
+                if let Err(e) = storage::initialize(path) {
+                    log::error!("database initialization/migration failed: {e}");
+                }
+            }
             #[cfg(debug_assertions)]
             let root = if let Some(test_path) = std::env::var_os("ONTIME_TEST_ROOT") {
                 let path = PathBuf::from(test_path);
                 storage::initialize(&path)?;
-                calendar::seed(&path)?;
                 Some(path)
             } else {
                 root
@@ -54,8 +57,12 @@ pub fn run() {
                 audio: audio::AudioHandle::start(handle.clone()),
             });
             let open = MenuItem::with_id(app, "open", "打开 onTime", true, None::<&str>)?;
+            let quick_10 =
+                MenuItem::with_id(app, "quick-10", "快速计时 · 10 分钟", true, None::<&str>)?;
+            let quick_30 =
+                MenuItem::with_id(app, "quick-30", "快速计时 · 30 分钟", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出（停止提醒）", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &quit])?;
+            let menu = Menu::with_items(app, &[&open, &quick_10, &quick_30, &quit])?;
             let mut tray = TrayIconBuilder::new()
                 .tooltip("onTime · 重要时刻，准时提醒")
                 .menu(&menu)
@@ -65,6 +72,16 @@ pub fn run() {
                             let _ = w.unminimize();
                             let _ = w.show();
                             let _ = w.set_focus();
+                        }
+                    }
+                    "quick-10" => {
+                        if let Err(error) = engine::create_quick_timer(app, 10) {
+                            log::error!("quick timer failed: {error}");
+                        }
+                    }
+                    "quick-30" => {
+                        if let Err(error) = engine::create_quick_timer(app, 30) {
+                            log::error!("quick timer failed: {error}");
                         }
                     }
                     "quit" => {
@@ -84,6 +101,8 @@ pub fn run() {
             }
             std::thread::spawn(move || {
                 let mut last_error = String::new();
+                let mut last_backup_day = String::new();
+                let mut last_backup_attempt = 0_i64;
                 let mut tracker = clock::ClockTracker::default();
                 let mut pending = clock::ClockChange::default();
                 loop {
@@ -103,6 +122,30 @@ pub fn run() {
                     )
                     .and_then(|_| {
                         pending = clock::ClockChange::default();
+                        let day = chrono::Local::now().date_naive().to_string();
+                        if let Some(path) = handle
+                            .state::<engine::Engine>()
+                            .root
+                            .lock()
+                            .ok()
+                            .and_then(|root| root.clone())
+                        {
+                            let backup_key = format!("{}:{day}", path.display());
+                            if last_backup_day != backup_key
+                                || wall.timestamp() - last_backup_attempt >= 3600
+                            {
+                                last_backup_day = backup_key;
+                                last_backup_attempt = wall.timestamp();
+                                let app = handle.clone();
+                                std::thread::spawn(move || {
+                                    if let Err(error) = storage::automatic_backup(&path, &day) {
+                                        let message = format!("自动备份失败：{error}");
+                                        log::warn!("{message}");
+                                        let _ = app.emit("backup-error", message);
+                                    }
+                                });
+                            }
+                        }
                         engine::reconcile(
                             &handle,
                             &handle.state::<engine::Engine>(),
@@ -145,30 +188,37 @@ pub fn run() {
                 if window.label() == "alert" {
                     let _ = window.emit("close-alert-request", ());
                 } else {
-                    let _ = window.hide();
+                    if window.emit("main-close-request", ()).is_err() {
+                        let _ = window.hide();
+                    }
                 }
             }
         })
         .invoke_handler(tauri::generate_handler![
             engine::get_snapshot,
+            engine::get_history,
+            engine::check_alarm_conflicts,
+            engine::preview_next_runs,
+            engine::test_notification,
             preferences::read_appearance,
             preferences::save_appearance,
             engine::choose_data_root,
             engine::save_alarm,
             engine::delete_alarm,
             engine::set_enabled,
+            engine::save_group,
+            engine::delete_group,
             engine::save_tag,
             engine::delete_tag,
             engine::settle_occurrence,
             engine::import_sound,
             engine::preview_sound,
-            calendar::refresh_calendar,
             backup::export_backup,
             backup::import_backup,
             update::check_update,
+            update::download_update,
             update::open_update_link
         ])
         .run(tauri::generate_context!())
         .expect("无法启动 onTime");
 }
-

@@ -1,9 +1,9 @@
 use crate::{
     audio::{AudioHandle, Play},
-    domain::{Alarm, Calendar, Occurrence, Tag, eligible_for_catchup},
+    domain::{Alarm, Group, Occurrence, Tag, eligible_for_catchup},
     storage::{self, Snapshot},
 };
-use chrono::{Datelike, Local, Utc};
+use chrono::Utc;
 use rusqlite::{Connection, params};
 use std::{fs, path::PathBuf, sync::Mutex};
 use tauri::{AppHandle, Emitter, Manager};
@@ -20,9 +20,6 @@ fn error<E: std::fmt::Display>(e: E) -> String {
 fn persist_occurrence(conn: &Connection, o: &Occurrence) -> Result<(), String> {
     conn.execute("INSERT INTO occurrences(id,alarm_id,scheduled_at,json) VALUES(?1,?2,?3,?4) ON CONFLICT(id) DO UPDATE SET json=excluded.json", params![o.id, o.alarm_id, o.scheduled_at, serde_json::to_string(o).map_err(error)?]).map_err(error)?;
     Ok(())
-}
-fn calendar_for(calendars: &[Calendar]) -> Option<&Calendar> {
-    calendars.iter().find(|c| c.year == Local::now().year())
 }
 fn cancel_instances(conn: &Connection, alarm_id: &str) -> Result<(), String> {
     let mut stmt = conn
@@ -58,14 +55,50 @@ fn show_alert(app: &AppHandle) {
     .always_on_top(true)
     .build();
 }
-fn announce(app: &AppHandle, o: &Occurrence) {
-    let _ = app
-        .notification()
-        .builder()
-        .title("onTime · 时间到了")
-        .body(&o.title)
-        .show();
+fn announce(app: &AppHandle, occurrences: &[Occurrence]) {
+    if occurrences.is_empty() {
+        return;
+    }
+    let title = if occurrences.len() == 1 {
+        "onTime · 时间到了".to_string()
+    } else {
+        format!("onTime · {} 个提醒同时触发", occurrences.len())
+    };
+    let body = if occurrences.len() == 1 {
+        occurrences[0].title.clone()
+    } else {
+        let names = occurrences
+            .iter()
+            .take(3)
+            .map(|o| o.title.as_str())
+            .collect::<Vec<_>>()
+            .join("、");
+        if occurrences.len() > 3 {
+            format!(
+                "{names} 等 {} 个提醒，请打开 onTime 逐项处理。",
+                occurrences.len()
+            )
+        } else {
+            format!("{names}，请打开 onTime 逐项处理。")
+        }
+    };
+    let result = app.notification().builder().title(title).body(body).show();
+    if let Err(e) = result {
+        let message = format!("系统通知发送失败：{e}");
+        log::warn!("{message}");
+        let _ = app.emit("notification-error", message);
+    }
     show_alert(app);
+}
+
+#[tauri::command]
+pub fn test_notification(app: AppHandle) -> Result<(), String> {
+    app.notification()
+        .builder()
+        .title("onTime 通知测试")
+        .body("系统通知已连接，可以正常接收提醒。")
+        .show()
+        .map_err(|e| format!("系统通知发送失败：{e}"))
 }
 fn root(state: &Engine) -> Result<std::sync::MutexGuard<'_, Option<PathBuf>>, String> {
     let guard = state.root.lock().map_err(error)?;
@@ -84,6 +117,113 @@ pub fn get_snapshot(state: tauri::State<Engine>) -> Result<Option<Snapshot>, Str
     guard.as_ref().map(|p| storage::snapshot(p)).transpose()
 }
 #[tauri::command]
+pub fn get_history(
+    state: tauri::State<Engine>,
+    filter: storage::HistoryFilter,
+) -> Result<storage::HistoryPage, String> {
+    let guard = root(&state)?;
+    storage::history_page(guard.as_ref().unwrap(), filter)
+}
+
+#[tauri::command]
+pub fn check_alarm_conflicts(
+    state: tauri::State<Engine>,
+    mut alarm: Alarm,
+) -> Result<Vec<String>, String> {
+    let guard = root(&state)?;
+    let now = Utc::now().timestamp();
+    alarm.enabled = true;
+    if alarm.kind == "timer" && alarm.deadline.is_none() {
+        alarm.deadline = now.checked_add(alarm.duration_seconds);
+    }
+    let mut candidate = Vec::new();
+    let mut cursor = now;
+    for _ in 0..3 {
+        let Some(next) = alarm.next_after(cursor) else {
+            break;
+        };
+        candidate.push(next);
+        cursor = next;
+    }
+    let snapshot = storage::snapshot(guard.as_ref().unwrap())?;
+    let mut conflicts = Vec::new();
+    for existing in snapshot
+        .alarms
+        .iter()
+        .filter(|other| other.id != alarm.id && other.enabled)
+    {
+        let mut existing_cursor = now;
+        let mut times = Vec::new();
+        for _ in 0..3 {
+            let Some(next) = existing.next_after(existing_cursor) else {
+                break;
+            };
+            times.push(next);
+            existing_cursor = next;
+        }
+        if candidate
+            .iter()
+            .any(|a| times.iter().any(|b| a.abs_diff(*b) <= 60))
+        {
+            conflicts.push(existing.title.clone());
+        }
+    }
+    conflicts.sort();
+    conflicts.dedup();
+    Ok(conflicts)
+}
+
+pub fn create_quick_timer(app: &AppHandle, minutes: u32) -> Result<(), String> {
+    if ![10, 30].contains(&minutes) {
+        return Err("快速计时只支持 10 或 30 分钟".into());
+    }
+    let state = app.state::<Engine>();
+    let guard = root(&state)?;
+    let now = Utc::now().timestamp();
+    let mut alarm: Alarm = serde_json::from_value(serde_json::json!({
+        "id": uuid::Uuid::new_v4().to_string(), "title": format!("快速计时 · {minutes} 分钟"),
+        "content":"从系统托盘快速创建", "enabled":true, "kind":"timer", "time":"09:00", "date":null,
+        "repeat":"once", "weekdays":[], "durationSeconds":minutes*60, "deadline":now+i64::from(minutes)*60,
+        "sound":null, "volume":0.7, "gradual":true, "ringSeconds":60, "snoozeLimit":3, "tags":[],
+        "revision":1, "createdAt":now
+    })).map_err(error)?;
+    alarm.deadline = Some(now + i64::from(minutes) * 60);
+    storage::save_alarm(guard.as_ref().unwrap(), &alarm, alarm.next_after(now))?;
+    drop(guard);
+    if let Err(error) = app
+        .notification()
+        .builder()
+        .title("快速计时已创建")
+        .body(format!("{} 分钟后提醒你。", minutes))
+        .show()
+    {
+        log::warn!("快速计时通知发送失败：{error}");
+    }
+    notify(app);
+    Ok(())
+}
+#[tauri::command]
+pub fn preview_next_runs(mut alarm: Alarm, count: u8) -> Vec<i64> {
+    alarm.enabled = true;
+    let now = Utc::now().timestamp();
+    if alarm.kind == "timer" {
+        let Some(deadline) = now.checked_add(alarm.duration_seconds) else {
+            return Vec::new();
+        };
+        alarm.deadline = Some(deadline);
+    }
+    let mut cursor = now;
+    let mut runs = Vec::new();
+    for _ in 0..count.clamp(1, 5) {
+        let Some(next) = alarm.next_after(cursor) else {
+            break;
+        };
+        runs.push(next);
+        cursor = next;
+    }
+    runs
+}
+#[tauri::command]
 pub async fn choose_data_root(app: AppHandle) -> Result<Option<Snapshot>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let Some(folder) = app
@@ -98,7 +238,6 @@ pub async fn choose_data_root(app: AppHandle) -> Result<Option<Snapshot>, String
         let state = app.state::<Engine>();
         let mut guard = state.root.lock().map_err(error)?;
         storage::initialize(&path)?;
-        crate::calendar::seed(&path)?;
         apply_clock_change_database(
             &path,
             crate::clock::ClockChange {
@@ -134,6 +273,20 @@ pub fn save_alarm(
     let guard = root(&state)?;
     let path = guard.as_ref().unwrap();
     let snap = storage::snapshot(path)?;
+    if alarm
+        .group_id
+        .as_ref()
+        .is_some_and(|id| !snap.groups.iter().any(|g| &g.id == id))
+    {
+        return Err("分组已不存在，请重新选择".into());
+    }
+    if alarm
+        .tags
+        .iter()
+        .any(|id| !snap.tags.iter().any(|t| &t.id == id))
+    {
+        return Err("标签已不存在，请重新选择".into());
+    }
     let old = snap.alarms.iter().find(|a| a.id == alarm.id);
     if let Some(old) = old {
         if alarm.revision != old.revision {
@@ -148,7 +301,7 @@ pub fn save_alarm(
         alarm.id = uuid::Uuid::new_v4().to_string();
         alarm.created_at = Utc::now().timestamp();
     }
-    let next = alarm.next_after(Utc::now().timestamp(), calendar_for(&snap.calendars));
+    let next = alarm.next_after(Utc::now().timestamp());
     if alarm.enabled && next.is_none() {
         return Err("请设置未来的提醒时间".into());
     }
@@ -190,7 +343,7 @@ fn set_enabled_database(
         if enabled && alarm.kind == "timer" {
             alarm.deadline = Some(now + alarm.duration_seconds);
         }
-        let next = alarm.next_after(now, calendar_for(&snap.calendars));
+        let next = alarm.next_after(now);
         if enabled && next.is_none() {
             return Err(format!("{} 的一次性时间已过，请先编辑", alarm.title));
         }
@@ -234,10 +387,27 @@ pub fn save_tag(app: AppHandle, state: tauri::State<Engine>, mut tag: Tag) -> Re
     {
         return Err("标签名称或颜色无效".into());
     }
+    let guard = root(&state)?;
+    let snap = storage::snapshot(guard.as_ref().unwrap())?;
+    if snap
+        .tags
+        .iter()
+        .any(|item| item.id != tag.id && item.name.trim().to_lowercase() == tag.name.to_lowercase())
+    {
+        return Err("已存在同名标签，请换一个名称".into());
+    }
+    tag.created_at = if tag.id.is_empty() {
+        Some(Utc::now().timestamp())
+    } else {
+        snap.tags
+            .iter()
+            .find(|item| item.id == tag.id)
+            .ok_or("记录已不存在，请刷新后重试")?
+            .created_at
+    };
     if tag.id.is_empty() {
         tag.id = uuid::Uuid::new_v4().to_string();
     }
-    let guard = root(&state)?;
     let conn = storage::open(guard.as_ref().unwrap())?;
     conn.execute(
         "INSERT INTO tags(id,json) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET json=excluded.json",
@@ -260,6 +430,75 @@ pub fn delete_tag(app: AppHandle, state: tauri::State<Engine>, id: String) -> Re
     for mut a in snap.alarms {
         if a.tags.contains(&id) {
             a.tags.retain(|t| t != &id);
+            a.revision += 1;
+            tx.execute(
+                "UPDATE alarms SET json=?2 WHERE id=?1",
+                params![a.id, serde_json::to_string(&a).map_err(error)?],
+            )
+            .map_err(error)?;
+        }
+    }
+    tx.commit().map_err(error)?;
+    drop(guard);
+    notify(&app);
+    Ok(())
+}
+#[tauri::command]
+pub fn save_group(
+    app: AppHandle,
+    state: tauri::State<Engine>,
+    mut group: Group,
+) -> Result<(), String> {
+    group.name = group.name.trim().into();
+    if group.name.is_empty()
+        || group.name.chars().count() > 24
+        || group.color.len() != 7
+        || !group.color.starts_with('#')
+        || !group.color[1..].bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Err("分组名称或颜色无效".into());
+    }
+    let guard = root(&state)?;
+    let snap = storage::snapshot(guard.as_ref().unwrap())?;
+    if snap.groups.iter().any(|item| {
+        item.id != group.id && item.name.trim().to_lowercase() == group.name.to_lowercase()
+    }) {
+        return Err("已存在同名分组，请换一个名称".into());
+    }
+    group.created_at = if group.id.is_empty() {
+        Some(Utc::now().timestamp())
+    } else {
+        snap.groups
+            .iter()
+            .find(|item| item.id == group.id)
+            .ok_or("记录已不存在，请刷新后重试")?
+            .created_at
+    };
+    if group.id.is_empty() {
+        group.id = uuid::Uuid::new_v4().to_string();
+    }
+    let conn = storage::open(guard.as_ref().unwrap())?;
+    conn.execute(
+        "INSERT INTO groups(id,json) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET json=excluded.json",
+        params![group.id, serde_json::to_string(&group).map_err(error)?],
+    )
+    .map_err(error)?;
+    drop(guard);
+    notify(&app);
+    Ok(())
+}
+#[tauri::command]
+pub fn delete_group(app: AppHandle, state: tauri::State<Engine>, id: String) -> Result<(), String> {
+    let guard = root(&state)?;
+    let path = guard.as_ref().unwrap();
+    let snap = storage::snapshot(path)?;
+    let mut conn = storage::open(path)?;
+    let tx = conn.transaction().map_err(error)?;
+    tx.execute("DELETE FROM groups WHERE id=?1", [&id])
+        .map_err(error)?;
+    for mut a in snap.alarms {
+        if a.group_id.as_ref() == Some(&id) {
+            a.group_id = None;
             a.revision += 1;
             tx.execute(
                 "UPDATE alarms SET json=?2 WHERE id=?1",
@@ -418,10 +657,7 @@ fn apply_clock_change_database(
         {
             tx.execute(
                 "UPDATE alarms SET next_at=?2 WHERE id=?1",
-                params![
-                    alarm.id,
-                    alarm.next_after(now, calendar_for(&snap.calendars))
-                ],
+                params![alarm.id, alarm.next_after(now)],
             )
             .map_err(error)?;
             changed = true;
@@ -475,12 +711,16 @@ pub fn apply_clock_change(
     }
     Ok(())
 }
-fn reconcile_database(path: &std::path::Path, now: i64) -> Result<(bool, Vec<Occurrence>), String> {
+fn reconcile_database(
+    path: &std::path::Path,
+    now: i64,
+) -> Result<(bool, Vec<Occurrence>, Vec<Occurrence>), String> {
     let snap = storage::snapshot(path)?;
     let mut conn = storage::open(path)?;
     let tx = conn.transaction().map_err(error)?;
     let mut changed = false;
     let mut announce_list = vec![];
+    let mut missed_list = vec![];
     for a in &snap.alarms {
         if !a.enabled {
             continue;
@@ -496,7 +736,7 @@ fn reconcile_database(path: &std::path::Path, now: i64) -> Result<(bool, Vec<Occ
             if due < now - 1800 && a.kind == "clock" && a.repeat != "once" {
                 let mut cursor = now - 1801;
                 for _ in 0..5 {
-                    let Some(t) = a.next_after(cursor, calendar_for(&snap.calendars)) else {
+                    let Some(t) = a.next_after(cursor) else {
                         break;
                     };
                     if t > now {
@@ -526,16 +766,25 @@ fn reconcile_database(path: &std::path::Path, now: i64) -> Result<(bool, Vec<Occ
                     snooze_count: 0,
                     snooze_until: None,
                     started_at: valid.then_some(now),
-                    reason: if now - due > 3 { "补响" } else { "准时" }.into(),
+                    reason: if valid && now - due > 3 {
+                        "补响"
+                    } else if valid {
+                        "准时"
+                    } else {
+                        "未补响"
+                    }
+                    .into(),
                 };
                 persist_occurrence(&tx, &o)?;
                 if valid {
                     announce_list.push(o);
+                } else {
+                    missed_list.push(o);
                 }
             }
             tx.execute(
                 "UPDATE alarms SET next_at=?2 WHERE id=?1",
-                params![a.id, a.next_after(now, calendar_for(&snap.calendars))],
+                params![a.id, a.next_after(now)],
             )
             .map_err(error)?;
             changed = true;
@@ -549,10 +798,17 @@ fn reconcile_database(path: &std::path::Path, now: i64) -> Result<(bool, Vec<Occ
             let valid = eligible_for_catchup(o.snooze_until.unwrap(), now);
             o.status = if valid { "ringing" } else { "skipped_expired" }.into();
             o.started_at = valid.then_some(now);
-            o.reason = "贪睡".into();
+            o.reason = if valid {
+                "贪睡"
+            } else {
+                "贪睡后过期，未补响"
+            }
+            .into();
             persist_occurrence(&tx, &o)?;
             if valid {
                 announce_list.push(o.clone());
+            } else {
+                missed_list.push(o.clone());
             }
             changed = true;
         }
@@ -562,7 +818,6 @@ fn reconcile_database(path: &std::path::Path, now: i64) -> Result<(bool, Vec<Occ
             changed = true;
         }
     }
-    tx.execute("DELETE FROM occurrences WHERE scheduled_at<?1 AND json NOT LIKE '%ringing%' AND json NOT LIKE '%snoozed%'",[now-90*86400]).map_err(error)?;
     for a in &snap.alarms {
         if !a.enabled || !(a.kind == "timer" || a.repeat == "once") {
             continue;
@@ -589,7 +844,7 @@ fn reconcile_database(path: &std::path::Path, now: i64) -> Result<(bool, Vec<Occ
         }
     }
     tx.commit().map_err(error)?;
-    Ok((changed, announce_list))
+    Ok((changed, announce_list, missed_list))
 }
 
 pub fn reconcile(app: &AppHandle, state: &Engine, now: i64) -> Result<(), String> {
@@ -597,9 +852,14 @@ pub fn reconcile(app: &AppHandle, state: &Engine, now: i64) -> Result<(), String
     let Some(path) = guard.as_ref() else {
         return Ok(());
     };
-    let (changed, announce_list) = reconcile_database(path, now)?;
+    let (changed, announce_list, missed_list) = reconcile_database(path, now)?;
     let updated = storage::snapshot(path)?;
-    if let Some(o) = updated.occurrences.iter().find(|o| o.status == "ringing") {
+    if let Some(o) = updated
+        .occurrences
+        .iter()
+        .filter(|o| o.status == "ringing")
+        .min_by_key(|o| (o.scheduled_at, o.alarm_id.as_str()))
+    {
         if app
             .get_webview_window("alert")
             .is_none_or(|w| !w.is_visible().unwrap_or(false))
@@ -625,8 +885,24 @@ pub fn reconcile(app: &AppHandle, state: &Engine, now: i64) -> Result<(), String
         }
     }
     drop(guard);
-    for o in announce_list {
-        announce(app, &o);
+    if !announce_list.is_empty() {
+        announce(app, &announce_list);
+    }
+    if !missed_list.is_empty() {
+        let title = format!("onTime · {} 个提醒过期未补响", missed_list.len());
+        let body = if missed_list.len() == 1 {
+            format!(
+                "{} 已记入提醒记录，打开 onTime 查看并调整。",
+                missed_list[0].title
+            )
+        } else {
+            "应用未运行超过补响时限，这些提醒已记入记录。打开 onTime 查看。".into()
+        };
+        if let Err(e) = app.notification().builder().title(title).body(body).show() {
+            let message = format!("漏响摘要通知发送失败：{e}");
+            log::warn!("{message}");
+            let _ = app.emit("notification-error", message);
+        }
     }
     if changed {
         notify(app);
@@ -668,10 +944,30 @@ mod scheduler_tests {
     #[test]
     fn expired_one_shot_is_recorded_and_disabled() {
         let f = Fixture::new(10000);
-        assert!(reconcile_database(&f.0, 11801).unwrap().1.is_empty());
+        let (_, ringing, missed) = reconcile_database(&f.0, 11801).unwrap();
+        assert!(ringing.is_empty());
+        assert_eq!(missed.len(), 1);
         let snap = storage::snapshot(&f.0).unwrap();
         assert_eq!(snap.occurrences[0].status, "skipped_expired");
+        assert_eq!(snap.occurrences[0].reason, "未补响");
         assert!(!snap.alarms[0].enabled);
+    }
+
+    #[test]
+    fn expired_snooze_is_recorded_as_missed() {
+        let f = Fixture::new(10000);
+        reconcile_database(&f.0, 10000).unwrap();
+        let mut o = storage::snapshot(&f.0).unwrap().occurrences.remove(0);
+        o.status = "snoozed".into();
+        o.snooze_until = Some(10300);
+        o.snooze_count = 1;
+        persist_occurrence(&storage::open(&f.0).unwrap(), &o).unwrap();
+        let (_, ringing, missed) = reconcile_database(&f.0, 12101).unwrap();
+        assert!(ringing.is_empty());
+        assert_eq!(missed.len(), 1);
+        let recorded = storage::snapshot(&f.0).unwrap().occurrences.remove(0);
+        assert_eq!(recorded.status, "skipped_expired");
+        assert_eq!(recorded.reason, "贪睡后过期，未补响");
     }
     #[test]
     fn snoozed_one_shot_stays_enabled_until_finished() {
