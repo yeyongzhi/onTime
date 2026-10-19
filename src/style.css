@@ -230,10 +230,6 @@ html, body, #app { height: 100%; overflow: hidden; }
 
 .editor-heading { flex-shrink: 0; }
 
-.color-choice { width: auto; min-height: 2.25rem; padding: 0.4rem 0.65rem; align-items: center; justify-content: center; }
-.color-choice [data-slot="questionnaire-choice-indicator"] { display: none; }
-.color-choice [data-slot="questionnaire-choice-label"] { flex: none; flex-direction: row; gap: 0.4rem; align-items: center; }
-.color-choice[data-checked] { outline: 2px solid var(--primary); outline-offset: 2px; }
 
 .reminder-list > [data-slot="card"] { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(180px, 1fr) auto; align-items: center; gap: 12px; padding: 16px; }
 .reminder-list > [data-slot="card"] > [data-slot="card-header"], .reminder-list > [data-slot="card"] > [data-slot="card-content"] { padding: 0; }

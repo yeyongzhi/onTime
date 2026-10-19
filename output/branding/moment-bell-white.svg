@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" fill="none" role="img" aria-label="Moment Bell">
+  <defs><mask id="clock"><path fill="#FFF" d="M0 0h256v256H0z"/><path d="M128 76v47l30 18" stroke="#000" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/></mask></defs>
+  <path d="M128 30C85 30 58 61 58 103v39c0 17-7 31-19 44-4 5-1 12 6 12h166c7 0 10-7 6-12-12-13-19-27-19-44v-39c0-42-27-73-70-73Z" fill="#FFF" mask="url(#clock)"/>
+  <path d="M105 216c4 13 12 20 23 20s19-7 23-20" fill="#FFF"/>
+  <circle cx="205" cy="48" r="17" fill="#FFF"/>
+</svg>

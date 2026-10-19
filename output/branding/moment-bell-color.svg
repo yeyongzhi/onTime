@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" fill="none" role="img" aria-label="Moment Bell">
+  <path d="M128 30C85 30 58 61 58 103v39c0 17-7 31-19 44-4 5-1 12 6 12h166c7 0 10-7 6-12-12-13-19-27-19-44v-39c0-42-27-73-70-73Z" fill="#5D5FEF"/>
+  <path d="M105 216c4 13 12 20 23 20s19-7 23-20" fill="#5D5FEF"/>
+  <path d="M128 76v47l30 18" stroke="#FFF" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="205" cy="48" r="17" fill="#FFB85C"/>
+</svg>
