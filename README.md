@@ -10,6 +10,10 @@ onTime 是一款轻量、本地优先的桌面提醒应用。定点提醒、倒�
 
 [产品介绍](https://yeyongzhi.github.io/onTime/) · [下载安装包](https://github.com/yeyongzhi/onTime/releases) · [反馈问题](https://github.com/yeyongzhi/onTime/issues)
 
+当前代码版本：**v0.0.1-beta2（预览版）**。
+
+[查看本次预发布](https://github.com/yeyongzhi/onTime/releases/tag/v0.0.1-beta2) · [查看全部发布](https://github.com/yeyongzhi/onTime/releases) · [更新日志](docs/changelog.md)
+
 ## 你可以用它做什么
 
 - **安排时间**：定点或倒计时；一次性或每天、每周、每月、每季度、每年重复，并可设定提醒生效日期。
@@ -63,3 +67,7 @@ GitHub Actions 在 `dev` / `main` 推送时构建 Windows x64、macOS Apple Sili
 产品站网址：<https://yeyongzhi.github.io/onTime/>。首次部署是否成功以 Actions 结果为准。
 
 详细开发资料：[项目说明书](项目说明书.md) · [技术开发说明书](技术开发说明书.md) · [开发进度](开发进度.md)
+
+## 联系作者
+
+[GitHub 主页](https://github.com/yeyongzhi) · [问题反馈](https://github.com/yeyongzhi/onTime/issues)

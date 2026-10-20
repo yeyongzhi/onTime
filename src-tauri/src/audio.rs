@@ -135,11 +135,10 @@ impl AudioHandle {
                             output.take();
                             active = None;
                         }
-                        if let (Some(p), Some(play)) = (&player, &active) {
-                            if play.gradual {
+                        if let (Some(p), Some(play)) = (&player, &active)
+                            && play.gradual {
                                 p.set_volume(play.volume * (elapsed / 12.0).clamp(0.02, 1.0));
                             }
-                        }
                     }
                 }
             }

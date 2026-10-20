@@ -171,7 +171,8 @@ impl Alarm {
             .date
             .as_deref()
             .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok());
-        let selected = match self.repeat.as_str() {
+
+        match self.repeat.as_str() {
             "daily" => true,
             "workdays" => weekday < 5,
             "weekends" => weekday >= 5,
@@ -195,8 +196,7 @@ impl Alarm {
                     && date.day() == a.day().min(days_in_month(date.year(), date.month()))
             }),
             _ => false,
-        };
-        selected
+        }
     }
 
     pub fn next_after(&self, after: i64) -> Option<i64> {

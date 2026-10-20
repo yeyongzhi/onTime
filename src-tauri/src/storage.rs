@@ -22,6 +22,8 @@ pub struct Snapshot {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryFilter {
+    #[serde(default)]
+    pub alarm_ids: Option<Vec<String>>,
     pub page: u32,
     pub page_size: u32,
     pub keyword: String,
@@ -318,13 +320,14 @@ pub fn history_page(root: &Path, filter: HistoryFilter) -> Result<HistoryPage, S
         .replace('_', "\\_");
     let pattern = format!("%{keyword}%");
     let status = filter.status.trim();
+    let alarm_ids = filter.alarm_ids.as_ref().map(serde_json::to_string).transpose().map_err(|e| e.to_string())?;
     let total: i64 = conn.query_row(
-        "SELECT count(*) FROM occurrences WHERE (?1='' OR title LIKE ?2 ESCAPE '\\') AND (?3='' OR status=?3) AND (?4 IS NULL OR scheduled_at>=?4) AND (?5 IS NULL OR scheduled_at<?5)",
-        rusqlite::params![keyword, pattern, status, filter.from, filter.to],
+        "SELECT count(*) FROM occurrences WHERE (?1='' OR title LIKE ?2 ESCAPE '\\') AND (?3='' OR status=?3) AND (?4 IS NULL OR scheduled_at>=?4) AND (?5 IS NULL OR scheduled_at<?5) AND (?6 IS NULL OR alarm_id IN (SELECT value FROM json_each(?6)))",
+        rusqlite::params![keyword, pattern, status, filter.from, filter.to, alarm_ids],
         |row| row.get(0),
     ).map_err(|e| e.to_string())?;
     let offset = i64::from(page - 1) * i64::from(page_size);
-    let mut stmt = conn.prepare("SELECT json FROM occurrences WHERE (?1='' OR title LIKE ?2 ESCAPE '\\') AND (?3='' OR status=?3) AND (?4 IS NULL OR scheduled_at>=?4) AND (?5 IS NULL OR scheduled_at<?5) ORDER BY scheduled_at DESC LIMIT ?6 OFFSET ?7").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT json FROM occurrences WHERE (?1='' OR title LIKE ?2 ESCAPE '\\') AND (?3='' OR status=?3) AND (?4 IS NULL OR scheduled_at>=?4) AND (?5 IS NULL OR scheduled_at<?5) AND (?6 IS NULL OR alarm_id IN (SELECT value FROM json_each(?6))) ORDER BY scheduled_at DESC LIMIT ?7 OFFSET ?8").map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(
             rusqlite::params![
@@ -333,6 +336,7 @@ pub fn history_page(root: &Path, filter: HistoryFilter) -> Result<HistoryPage, S
                 status,
                 filter.from,
                 filter.to,
+                alarm_ids,
                 page_size,
                 offset
             ],
@@ -644,6 +648,7 @@ mod tests {
         let filtered = history_page(
             &root.0,
             HistoryFilter {
+                alarm_ids: None,
                 page: 1,
                 page_size: 10,
                 keyword: "用药".into(),
@@ -664,6 +669,7 @@ mod tests {
         let second_page = history_page(
             &root.0,
             HistoryFilter {
+                alarm_ids: None,
                 page: 2,
                 page_size: 10,
                 keyword: String::new(),
@@ -675,6 +681,14 @@ mod tests {
         .unwrap();
         assert_eq!(second_page.total, 23);
         assert_eq!(second_page.items.len(), 10);
+        for (ids, expected) in [(vec![], 0), (vec!["missing".to_string()], 0), (vec!["test".to_string()], 23)] {
+            let page = history_page(&root.0, HistoryFilter {
+                alarm_ids: Some(ids), page: 1, page_size: 10, keyword: String::new(), status: String::new(), from: None, to: None,
+            }).unwrap();
+            assert_eq!(page.total, expected);
+            assert_eq!(page.items.len(), expected.min(10) as usize);
+        }
+
     }
     #[test]
     fn future_database_version_is_refused_without_modification() {

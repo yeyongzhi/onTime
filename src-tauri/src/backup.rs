@@ -69,12 +69,11 @@ pub fn export_to(root: &Path, destination: &Path) -> Result<(), String> {
     ];
     let mut used = std::collections::BTreeSet::new();
     for alarm in &snap.alarms {
-        if let Some(sound) = &alarm.sound {
-            if used.insert(sound.clone()) {
+        if let Some(sound) = &alarm.sound
+            && used.insert(sound.clone()) {
                 let path = storage::safe_sound(root, sound)?;
                 entries.push((format!("sounds/{sound}"), fs::read(path).map_err(err)?));
             }
-        }
     }
     if entries.iter().map(|(_, b)| b.len() as u64).sum::<u64>() > LIMIT {
         return Err("备份超过 200 MB，请减少导入铃声后再试".into());

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "alert-sizing",
+  "description": "Allow the reminder window to fit its content",
+  "windows": ["alert"],
+  "permissions": ["core:window:allow-set-size"]
+}

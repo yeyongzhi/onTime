@@ -50,8 +50,9 @@ fn show_alert(app: &AppHandle) {
         tauri::WebviewUrl::App("index.html#/alert".into()),
     )
     .title("onTime · 时间到了")
-    .inner_size(500.0, 600.0)
-    .min_inner_size(420.0, 360.0)
+    .inner_size(540.0, 520.0)
+    .resizable(false)
+    .maximizable(false)
     .always_on_top(true)
     .build();
 }
@@ -116,6 +117,31 @@ pub fn get_snapshot(state: tauri::State<Engine>) -> Result<Option<Snapshot>, Str
     let guard = state.root.lock().map_err(error)?;
     guard.as_ref().map(|p| storage::snapshot(p)).transpose()
 }
+#[tauri::command]
+pub fn get_home_summary(state: tauri::State<Engine>, now: i64, today_start: i64, today_end: i64, week_end: i64) -> Result<serde_json::Value, String> {
+    let guard = root(&state)?;
+    let path = guard.as_ref().unwrap();
+    let snap = storage::snapshot(path)?;
+    let mut upcoming = 0_u64;
+    let mut reminders = 0_u64;
+    for alarm in snap.alarms.iter().filter(|a| a.enabled) {
+        let mut cursor = now;
+        let mut count = 0;
+        // Each current schedule can trigger at most once per local day.
+        for _ in 0..9 {
+            let Some(next) = alarm.next_after(cursor) else { break; };
+            if next >= week_end { break; }
+            count += 1;
+            cursor = next;
+        }
+        upcoming += count;
+        if count > 0 { reminders += 1; }
+    }
+    let conn = storage::open(path)?;
+    let processed: i64 = conn.query_row("SELECT count(*) FROM occurrences WHERE scheduled_at>=?1 AND scheduled_at<?2 AND json_extract(json, '$.status') IN ('dismissed','auto_stopped')", params![today_start, today_end], |row| row.get(0)).map_err(error)?;
+    Ok(serde_json::json!({"upcoming": upcoming, "reminders": reminders, "processed": processed}))
+}
+
 #[tauri::command]
 pub fn get_history(
     state: tauri::State<Engine>,
@@ -288,11 +314,10 @@ pub fn save_alarm(
         return Err("标签已不存在，请重新选择".into());
     }
     let old = snap.alarms.iter().find(|a| a.id == alarm.id);
-    if let Some(old) = old {
-        if alarm.revision != old.revision {
+    if let Some(old) = old
+        && alarm.revision != old.revision {
             return Err("提醒已变化，请关闭编辑器后重新打开".into());
         }
-    }
     alarm.revision = old.map_or(1, |a| a.revision + 1);
     if alarm.kind == "timer" && alarm.enabled {
         alarm.deadline = Some(Utc::now().timestamp() + alarm.duration_seconds);
@@ -818,28 +843,23 @@ fn reconcile_database(
             changed = true;
         }
     }
+    // Retire exhausted schedules without interrupting ringing or snoozed instances.
     for a in &snap.alarms {
-        if !a.enabled || !(a.kind == "timer" || a.repeat == "once") {
-            continue;
-        }
-        let next: Option<i64> = tx
-            .query_row("SELECT next_at FROM alarms WHERE id=?1", [&a.id], |r| {
-                r.get(0)
+        if !a.enabled { continue; }
+        let one_shot = a.kind == "timer" || a.repeat == "once";
+        let end_passed = a.effective_end.as_ref().is_some_and(|end| {
+            chrono::DateTime::from_timestamp(now, 0).is_some_and(|date| {
+                end.as_str() < date.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string().as_str()
             })
-            .map_err(error)?;
+        });
+        if !one_shot && !end_passed { continue; }
+        let next: Option<i64> = tx.query_row("SELECT next_at FROM alarms WHERE id=?1", [&a.id], |r| r.get(0)).map_err(error)?;
         let active: i64 = tx.query_row("SELECT count(*) FROM occurrences WHERE alarm_id=?1 AND json_extract(json, '$.status') IN ('ringing','snoozed')", [&a.id], |r| r.get(0)).map_err(error)?;
         if next.is_none() && active == 0 {
             let mut completed = a.clone();
             completed.enabled = false;
             completed.revision += 1;
-            tx.execute(
-                "UPDATE alarms SET json=?2 WHERE id=?1",
-                params![
-                    completed.id,
-                    serde_json::to_string(&completed).map_err(error)?
-                ],
-            )
-            .map_err(error)?;
+            tx.execute("UPDATE alarms SET json=?2 WHERE id=?1", params![completed.id, serde_json::to_string(&completed).map_err(error)?]).map_err(error)?;
             changed = true;
         }
     }
@@ -942,7 +962,7 @@ mod scheduler_tests {
         assert!(!snap.alarms[0].enabled);
     }
     #[test]
-    fn expired_one_shot_is_recorded_and_disabled() {
+    fn expired_one_shot_is_automatically_disabled() {
         let f = Fixture::new(10000);
         let (_, ringing, missed) = reconcile_database(&f.0, 11801).unwrap();
         assert!(ringing.is_empty());

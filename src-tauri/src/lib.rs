@@ -38,11 +38,10 @@ pub fn run() {
             let root = fs::read(bootstrap)
                 .ok()
                 .and_then(|b| serde_json::from_slice::<PathBuf>(&b).ok());
-            if let Some(path) = root.as_ref().filter(|path| path.join("data.db").is_file()) {
-                if let Err(e) = storage::initialize(path) {
+            if let Some(path) = root.as_ref().filter(|path| path.join("data.db").is_file())
+                && let Err(e) = storage::initialize(path) {
                     log::error!("database initialization/migration failed: {e}");
                 }
-            }
             #[cfg(debug_assertions)]
             let root = if let Some(test_path) = std::env::var_os("ONTIME_TEST_ROOT") {
                 let path = PathBuf::from(test_path);
@@ -94,11 +93,10 @@ pub fn run() {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;
-            if std::env::args().any(|a| a == "--tray") {
-                if let Some(w) = app.get_webview_window("main") {
+            if std::env::args().any(|a| a == "--tray")
+                && let Some(w) = app.get_webview_window("main") {
                     let _ = w.hide();
                 }
-            }
             std::thread::spawn(move || {
                 let mut last_error = String::new();
                 let mut last_backup_day = String::new();
@@ -197,6 +195,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             engine::get_snapshot,
             engine::get_history,
+            engine::get_home_summary,
             engine::check_alarm_conflicts,
             engine::preview_next_runs,
             engine::test_notification,

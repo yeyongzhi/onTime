@@ -7,6 +7,7 @@ import { getVersion } from '@tauri-apps/api/app'
 import { enable, disable, isEnabled } from '@tauri-apps/plugin-autostart'
 import { toast } from 'vue-sonner'
 import { useAlarmsStore } from '@/stores/alarms'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { appearance, resetAppearance } from '@/stores/appearance'
 import { Button } from '@/components/ui/button'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectItem } from '@/components/ui/select'
@@ -15,7 +16,6 @@ import { Switch } from '@/components/ui/switch'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { FieldGroup, Field, FieldLabel, FieldDescription } from '@/components/ui/field'
 
-import { Questionnaire, QuestionnaireItem, QuestionnaireTitle, QuestionnaireChoices, QuestionnaireChoice } from '@/components/ui/questionnaire'
 
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
@@ -82,6 +82,7 @@ async function testAudio() {
   try { await invoke('preview_sound', { sound: null, volume: 0.55, stop: false }); toast.success('已发送测试铃声'); }
   catch (e) { store.audioError = String(e); toast.error(String(e)) }
 }
+function setDisplayMode(value: unknown) { if (value === 'grid' || value === 'list') appearance.displayMode = value }
 function mode(value: unknown) { if (value === 'light' || value === 'dark' || value === 'system') appearance.mode = value }
 
 async function changeAuto(value: boolean) {
@@ -118,44 +119,45 @@ async function downloadUpdate() {
     </nav>
     <section class="settings-content" :aria-label="sections.find(item => item.id === section)?.label">
       <Card v-if="section === 'appearance'" class="settings-panel">
-        <CardHeader class="flex flex-row flex-wrap items-center gap-3"><div><CardTitle class="settings-panel-heading">外观</CardTitle><CardDescription>统一品牌紫色，调整明暗模式与显示方式。</CardDescription></div><Button variant="ghost" size="sm" class="ml-auto" @click="resetAppearance(); toast.success('外观已恢复默认')">恢复默认</Button></CardHeader>
+        <CardHeader class="flex flex-row flex-wrap items-center gap-3"><div><CardTitle class="settings-panel-heading">外观</CardTitle><CardDescription>统一品牌紫色，调整明暗模式与显示方式。</CardDescription></div><Button variant="secondary" size="sm" class="ml-auto" @click="resetAppearance(); toast.success('外观已恢复默认')">恢复默认</Button></CardHeader>
         <ScrollArea class="settings-panel-scroll"><CardContent><FieldGroup class="appearance-fields">
-          <Questionnaire :items="[{ name: 'appearance-mode', required: true }]" @submit.prevent><QuestionnaireItem name="appearance-mode" required><QuestionnaireTitle>外观模式</QuestionnaireTitle><QuestionnaireChoices class="grid grid-cols-3 gap-2"><QuestionnaireChoice v-for="item in modes" :key="item.value" :value="item.value" :checked="appearance.mode === item.value" @update:checked="checked => { if (checked) mode(item.value) }">{{ item.label }}</QuestionnaireChoice></QuestionnaireChoices></QuestionnaireItem></Questionnaire>
-          <Field><FieldLabel for="sidebar-width">侧边栏宽度</FieldLabel><Select :model-value="String(appearance.sidebarWidth)" @update:model-value="preference($event,'sidebarWidth')"><SelectTrigger id="sidebar-width" class="preference-select"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem v-for="value in widths" :key="value" :value="String(value)">{{ value }} px{{ value === 140 ? '（默认）' : '' }}</SelectItem></SelectGroup></SelectContent></Select></Field>
-          <Field><FieldLabel for="corner-radius">全局圆角</FieldLabel><Select :model-value="String(appearance.radius)" @update:model-value="preference($event,'radius')"><SelectTrigger id="corner-radius" class="preference-select"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem v-for="value in radii" :key="value" :value="String(value)">{{ radiusLabel(value) }}</SelectItem></SelectGroup></SelectContent></Select></Field>
-          <Field><FieldLabel for="font-size">全局字体大小</FieldLabel><Select :model-value="String(appearance.fontSize)" @update:model-value="preference($event,'fontSize')"><SelectTrigger id="font-size" class="preference-select"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem v-for="value in fonts" :key="value" :value="String(value)">{{ value }} px{{ value === 14 ? '（默认）' : '' }}</SelectItem></SelectGroup></SelectContent></Select></Field>
+          <Field class="settings-row"><div class="settings-row-copy"><FieldLabel>外观模式</FieldLabel><FieldDescription>选择亮色、暗色，或跟随系统自动切换。</FieldDescription></div><div class="settings-row-control"><Tabs :model-value="appearance.mode" @update:model-value="mode"><TabsList aria-label="外观模式"><TabsTrigger v-for="item in modes" :key="item.value" :value="item.value">{{ item.label }}</TabsTrigger></TabsList></Tabs></div></Field>
+          <Field class="settings-row"><div class="settings-row-copy"><FieldLabel for="default-display-mode">要素默认展示方式</FieldLabel><FieldDescription>统一应用于我的提醒、全部提醒、分组和标签；页面中切换展示方式也会同步更新此设置。</FieldDescription></div><div class="settings-row-control"><Tabs :model-value="appearance.displayMode" @update:model-value="setDisplayMode"><TabsList id="default-display-mode" aria-label="要素默认展示方式"><TabsTrigger value="grid">网格</TabsTrigger><TabsTrigger value="list">列表</TabsTrigger></TabsList></Tabs></div></Field>
+          <Field class="settings-row"><div class="settings-row-copy"><FieldLabel for="sidebar-width">侧边栏宽度</FieldLabel></div><div class="settings-row-control"><Select :model-value="String(appearance.sidebarWidth)" @update:model-value="preference($event,'sidebarWidth')"><SelectTrigger id="sidebar-width" class="preference-select"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem v-for="value in widths" :key="value" :value="String(value)">{{ value }} px{{ value === 140 ? '（默认）' : '' }}</SelectItem></SelectGroup></SelectContent></Select></div></Field>
+          <Field class="settings-row"><div class="settings-row-copy"><FieldLabel for="corner-radius">全局圆角</FieldLabel></div><div class="settings-row-control"><Select :model-value="String(appearance.radius)" @update:model-value="preference($event,'radius')"><SelectTrigger id="corner-radius" class="preference-select"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem v-for="value in radii" :key="value" :value="String(value)">{{ radiusLabel(value) }}</SelectItem></SelectGroup></SelectContent></Select></div></Field>
+          <Field class="settings-row"><div class="settings-row-copy"><FieldLabel for="font-size">全局字体大小</FieldLabel></div><div class="settings-row-control"><Select :model-value="String(appearance.fontSize)" @update:model-value="preference($event,'fontSize')"><SelectTrigger id="font-size" class="preference-select"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem v-for="value in fonts" :key="value" :value="String(value)">{{ value }} px{{ value === 14 ? '（默认）' : '' }}</SelectItem></SelectGroup></SelectContent></Select></div></Field>
         </FieldGroup></CardContent></ScrollArea>
       </Card>
       <Card v-else-if="section === 'general'" class="settings-panel"><CardHeader><CardTitle class="settings-panel-heading">常规</CardTitle><CardDescription>管理启动方式，并检查提醒所需的系统能力。</CardDescription></CardHeader><ScrollArea class="settings-panel-scroll"><CardContent><FieldGroup>
-        <Field><div class="flex items-center justify-between gap-4"><FieldLabel for="autostart">登录时启动 onTime</FieldLabel><Switch id="autostart" :model-value="auto" :disabled="changing" @update:model-value="changeAuto" /></div><FieldDescription>开启后，登录系统时 onTime 会收至托盘并继续监控；手动退出应用后提醒会停止。</FieldDescription></Field>
-        <Field><FieldLabel>后台提醒状态</FieldLabel><FieldDescription role="status">{{ reminderRuntimeStatus }}</FieldDescription><FieldDescription>应用需要保持在系统托盘运行；系统睡眠期间不会唤醒电脑。恢复运行后，30 分钟内的漏响会补响，更早的提醒会发送摘要并记录在“我的提醒”页。</FieldDescription></Field>
-        <Field><FieldLabel>系统通知</FieldLabel><FieldDescription role="status">{{ store.notificationError || (notificationPermission === 'granted' ? '已获系统授权，提醒触发时会发送桌面通知。' : notificationPermission === 'denied' ? '尚未获系统授权，通知可能不会显示。' : notificationPermission === 'unsupported' ? '当前环境无法读取通知权限。' : '正在检查通知权限…') }} 通知横幅也受系统专注模式或勿扰模式影响；应用响铃窗会作为提醒操作入口。</FieldDescription><div class="flex flex-wrap gap-2"><Button v-if="notificationPermission !== 'granted' && notificationPermission !== 'unsupported'" variant="outline" @click="requestNotificationPermission">请求通知权限</Button><Button variant="outline" @click="testNotification">发送测试通知</Button></div></Field>
-        <Field><FieldLabel>提醒铃声</FieldLabel><FieldDescription role="status">{{ store.audioError || '可以试听内置铃声，确认系统音频输出正常。' }}</FieldDescription><div><Button variant="outline" @click="testAudio">测试铃声</Button></div></Field>
+        <Field class="settings-row"><div class="settings-row-copy"><FieldLabel for="autostart">登录时启动 onTime</FieldLabel><FieldDescription>开启后，登录系统时 onTime 会收至托盘并继续监控；手动退出应用后提醒会停止。</FieldDescription></div><div class="settings-row-control"><Switch id="autostart" :model-value="auto" :disabled="changing" @update:model-value="changeAuto" /></div></Field>
+        <Field class="settings-row"><div class="settings-row-copy"><FieldLabel>后台提醒状态</FieldLabel><FieldDescription role="status">{{ reminderRuntimeStatus }}</FieldDescription><FieldDescription>应用需要保持在系统托盘运行；系统睡眠期间不会唤醒电脑。恢复运行后，30 分钟内的漏响会补响，更早的提醒会发送摘要并记录在“我的提醒”页。</FieldDescription></div></Field>
+        <Field class="settings-row"><div class="settings-row-copy"><FieldLabel>系统通知</FieldLabel><FieldDescription role="status">{{ store.notificationError || (notificationPermission === 'granted' ? '已获系统授权，提醒触发时会发送桌面通知。' : notificationPermission === 'denied' ? '尚未获系统授权，通知可能不会显示。' : notificationPermission === 'unsupported' ? '当前环境无法读取通知权限。' : '正在检查通知权限…') }} 通知横幅也受系统专注模式或勿扰模式影响；应用响铃窗会作为提醒操作入口。</FieldDescription></div><div class="settings-row-control"><div class="flex flex-wrap gap-2"><Button v-if="notificationPermission !== 'granted' && notificationPermission !== 'unsupported'" variant="secondary" @click="requestNotificationPermission">请求通知权限</Button><Button variant="secondary" @click="testNotification">发送测试通知</Button></div></div></Field>
+        <Field class="settings-row"><div class="settings-row-copy"><FieldLabel>提醒铃声</FieldLabel><FieldDescription role="status">{{ store.audioError || '可以试听内置铃声，确认系统音频输出正常。' }}</FieldDescription></div><div class="settings-row-control"><div><Button variant="secondary" @click="testAudio">测试铃声</Button></div></div></Field>
       </FieldGroup></CardContent></ScrollArea></Card>
       <Card v-else-if="section === 'data'" class="settings-panel"><CardHeader><CardTitle class="settings-panel-heading">数据</CardTitle><CardDescription>管理本地 SQLite 数据目录。</CardDescription></CardHeader><ScrollArea class="settings-panel-scroll"><CardContent><FieldGroup>
-        <Field><FieldLabel>数据状态</FieldLabel><FieldDescription role="status">{{ store.error || (store.snapshot ? 'SQLite 数据库已连接，提醒与分组标签已在本机加载。' : '尚未连接本地数据库。') }}</FieldDescription></Field>
-        <Field><FieldLabel>数据目录</FieldLabel><FieldDescription class="break-all">{{ store.snapshot?.dataRoot || '尚未选择' }}</FieldDescription><div><Button variant="outline" :disabled="store.busy" @click="relocate">{{ store.snapshot ? '更改数据目录' : '选择数据目录' }}</Button></div></Field>
+        <Field class="settings-row"><div class="settings-row-copy"><FieldLabel>数据状态</FieldLabel><FieldDescription role="status">{{ store.error || (store.snapshot ? 'SQLite 数据库已连接，提醒与分组标签已在本机加载。' : '尚未连接本地数据库。') }}</FieldDescription></div></Field>
+        <Field class="settings-row"><div class="settings-row-copy"><FieldLabel>数据目录</FieldLabel><FieldDescription class="break-all">{{ store.snapshot?.dataRoot || '尚未选择' }}</FieldDescription></div><div class="settings-row-control"><div><Button variant="secondary" :disabled="store.busy" @click="relocate">{{ store.snapshot ? '更改数据目录' : '选择数据目录' }}</Button></div></div></Field>
       </FieldGroup></CardContent></ScrollArea></Card>
-      <Card v-else-if="section === 'backup'" class="settings-panel"><CardHeader><CardTitle class="settings-panel-heading">备份与恢复</CardTitle><CardDescription>导出或恢复本地业务数据。</CardDescription></CardHeader><ScrollArea class="settings-panel-scroll"><CardContent><p class="text-sm text-muted-foreground">onTime 每天首次启动后自动备份 SQLite 数据库，保留最近 7 份，存放在数据目录的 backups 文件夹。手动导出包含提醒、分组、标签、提醒历史和铃声；设置项单独保存在本机。恢复会覆盖当前业务数据，并保留恢复前备份。</p><div class="mt-5 flex flex-wrap gap-2"><Button variant="outline" :disabled="store.busy || !store.snapshot" @click="backup('export_backup')">导出数据备份</Button><Button variant="outline" :disabled="store.busy || !store.snapshot" @click="restoreDialog = true">恢复备份</Button></div></CardContent></ScrollArea></Card>
+      <Card v-else-if="section === 'backup'" class="settings-panel"><CardHeader><CardTitle class="settings-panel-heading">备份与恢复</CardTitle><CardDescription>导出或恢复本地业务数据。</CardDescription></CardHeader><ScrollArea class="settings-panel-scroll"><CardContent><FieldGroup><Field class="settings-row"><div class="settings-row-copy"><FieldLabel>备份与恢复</FieldLabel><FieldDescription>onTime 每天首次启动后自动备份 SQLite 数据库，保留最近 7 份，存放在数据目录的 backups 文件夹。手动导出包含提醒、分组、标签、提醒历史和铃声；设置项单独保存在本机。恢复会覆盖当前业务数据，并保留恢复前备份。</FieldDescription></div><div class="settings-row-control flex flex-wrap gap-2"><Button variant="secondary" :disabled="store.busy || !store.snapshot" @click="backup('export_backup')">导出数据备份</Button><Button variant="secondary" :disabled="store.busy || !store.snapshot" @click="restoreDialog = true">恢复备份</Button></div></Field></FieldGroup></CardContent></ScrollArea></Card>
       <Card v-else class="settings-panel">
         <CardHeader><CardTitle class="settings-panel-heading">关于 onTime</CardTitle><CardDescription>版本 {{ version }}</CardDescription></CardHeader>
-        <ScrollArea class="settings-panel-scroll"><CardContent><div class="flex flex-col gap-4">
+        <ScrollArea class="settings-panel-scroll"><CardContent><div class="settings-about-row"><div class="flex min-w-0 flex-col gap-4">
           <div class="flex items-center gap-4"><BrandLogo class="size-16" /><div><h2 class="text-xl font-semibold">onTime</h2><p class="text-sm text-muted-foreground">轻量桌面提醒工具</p><p class="mt-1 text-sm text-muted-foreground">要紧的事，到点提醒。</p></div></div>
           <p v-if="update?.latest" class="text-sm text-muted-foreground">最新版本 {{ update.latest }}</p>
           <p v-if="update" role="status" class="text-sm">{{ update.message }}</p>
-          <div class="flex flex-wrap items-center gap-2">
-            <Button variant="outline" :disabled="store.busy" @click="checkUpdate">检查更新</Button>
-            <Button v-if="update?.available" variant="outline" :disabled="store.busy || updateProgress === 100" @click="downloadUpdate">{{ downloadingUpdate ? updateProgress === null ? '下载中…' : `下载中 ${updateProgress}%` : updateProgress === 100 ? '下载完成' : '下载安装包' }}</Button>
-          </div>
+
           <p v-if="downloadingUpdate" class="text-xs text-muted-foreground" role="status" aria-live="polite">正在下载更新{{ updateProgress !== null ? `：${updateProgress}%` : '…' }}</p>
           <p v-if="downloadedInstaller" class="break-all text-xs text-muted-foreground" role="status">安装包已保存至：{{ downloadedInstaller }}</p>
           <section v-if="update?.available && update.notes" class="flex flex-col gap-2">
             <h2 class="text-sm font-semibold">更新内容</h2>
             <pre class="whitespace-pre-wrap break-words text-sm text-muted-foreground">{{ update.notes }}</pre>
           </section>
-        </div></CardContent></ScrollArea>
+        </div><div class="settings-row-control">          <div class="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" :disabled="store.busy" @click="checkUpdate">检查更新</Button>
+            <Button v-if="update?.available" variant="secondary" :disabled="store.busy || updateProgress === 100" @click="downloadUpdate">{{ downloadingUpdate ? updateProgress === null ? '下载中…' : `下载中 ${updateProgress}%` : updateProgress === 100 ? '下载完成' : '下载安装包' }}</Button>
+          </div></div></div></CardContent></ScrollArea>
       </Card>
     </section>
-    <Dialog v-model:open="restoreDialog"><DialogContent><DialogHeader><DialogTitle>覆盖恢复当前数据？</DialogTitle><DialogDescription>恢复会替换提醒、标签和记录，并取消当前活动提醒。应用会保留恢复前备份；取消文件选择不会修改数据。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" @click="restoreDialog = false">取消</Button><Button variant="destructive" :disabled="store.busy" @click="confirmRestore">选择备份并恢复</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog v-model:open="restoreDialog"><DialogContent><DialogHeader><DialogTitle>覆盖恢复当前数据？</DialogTitle><DialogDescription>恢复会替换提醒、标签和记录，并取消当前活动提醒。应用会保留恢复前备份；取消文件选择不会修改数据。</DialogDescription></DialogHeader><DialogFooter><Button variant="secondary" @click="restoreDialog = false">取消</Button><Button variant="destructive" :disabled="store.busy" @click="confirmRestore">选择备份并恢复</Button></DialogFooter></DialogContent></Dialog>
   </main>
 </template>

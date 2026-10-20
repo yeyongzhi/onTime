@@ -22,3 +22,10 @@ export function newAlarm(): Alarm {
   const pad = (n: number) => String(n).padStart(2, '0')
   return { id: '', title: '', content: '', enabled: true, kind: 'clock', time: `${pad(date.getHours())}:${pad(date.getMinutes())}`, date: `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}`, repeat: 'daily', monthlyDay: null, effectiveStart: null, effectiveEnd: null, weekdays: [], durationSeconds: 1500, deadline: null, sound: null, volume: 0.7, gradual: true, ringSeconds: 60, snoozeLimit: 3, groupId: null, tags: [], revision: 0, createdAt: 0 }
 }
+
+// Effectiveness is independent of the user's enabled switch and nextRuns.
+export function alarmEffective(a: Alarm, now: number): boolean {
+  if (a.kind === 'timer') return a.deadline === null || a.deadline > now
+  if (a.repeat === 'once') return !!a.date && new Date(`${a.date}T${a.time}:00`).getTime() > now * 1000
+  return !a.effectiveEnd || new Date(`${a.effectiveEnd}T23:59:59`).getTime() >= now * 1000
+}

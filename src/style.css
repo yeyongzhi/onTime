@@ -27,6 +27,7 @@
     --color-input: var(--input);
     --color-border: var(--border);
     --color-destructive: var(--destructive);
+    --color-success: var(--success);
     --color-accent-foreground: var(--accent-foreground);
     --color-accent: var(--accent);
     --color-muted-foreground: var(--muted-foreground);
@@ -68,6 +69,7 @@ input[type="range"] { accent-color: var(--primary); }
     --accent: oklch(0.97 0 0);
     --accent-foreground: oklch(0.205 0 0);
     --destructive: oklch(0.577 0.245 27.325);
+    --success: oklch(0.48 0.14 150);
     --border: oklch(0.922 0 0);
     --input: oklch(0.922 0 0);
     --ring: oklch(0.708 0 0);
@@ -103,6 +105,7 @@ input[type="range"] { accent-color: var(--primary); }
     --accent: oklch(0.269 0 0);
     --accent-foreground: oklch(0.985 0 0);
     --destructive: oklch(0.704 0.191 22.216);
+    --success: oklch(0.76 0.17 150);
     --border: oklch(1 0 0 / 10%);
     --input: oklch(1 0 0 / 15%);
     --ring: oklch(0.556 0 0);
@@ -177,17 +180,17 @@ input[type="range"] { accent-color: var(--primary); }
 body { margin: 0; }
 .app-layout { height: 100dvh; overflow: hidden; }
 .app-content { min-height: 0; overflow-y: auto; }
-.settings-layout { display: flex; align-items: flex-start; gap: 20px; padding: 28px; }
+.settings-layout { display: flex; align-items: flex-start; gap: 16px; padding: 16px; }
 .settings-nav { position: sticky; top: 28px; flex: 0 0 154px; }
 .settings-content { flex: 1; min-width: 0; }
 .settings-panel { min-height: 614px; }
 .appearance-fields { gap: 26px; }
 .preference-select { width: 280px; max-width: 100%; }
-.workspace-page { display: flex; flex-direction: column; gap: 24px; padding: 28px; max-width: 1280px; margin: 0 auto; }
+.workspace-page { display: flex; flex-direction: column; gap: 16px; padding: 16px; width: 100%; max-width: none; margin: 0; }
 .workspace-heading { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; }
 .reminder-stats { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 16px; }
 @media (max-width: 900px) {
-  .settings-layout, .workspace-page { padding: 20px; }
+  .settings-layout, .workspace-page { padding: 16px; }
   .settings-nav { flex-basis: 140px; top: 20px; }
   .reminder-stats { grid-template-columns: 1fr; }
 }/* Fixed desktop frame; each content region owns its scrolling. */
@@ -203,7 +206,7 @@ html, body, #app { height: 100%; overflow: hidden; }
 .settings-nav .settings-category-button, .settings-nav .settings-category-button[data-active="true"] { font-weight: 400; }
 .settings-panel-heading { font-size: 1.25rem; line-height: 1.75rem; font-weight: 700; letter-spacing: -0.015em; }
 .settings-menu-scroll { height: 100%; min-height: 0; }
-.settings-layout { height: 100dvh; min-height: 0; box-sizing: border-box; overflow: hidden; align-items: stretch; max-width: 1320px; margin: 0 auto; }
+.settings-layout { height: 100dvh; min-height: 0; box-sizing: border-box; overflow: hidden; align-items: stretch; width: 100%; max-width: none; margin: 0; }
 .settings-nav, .settings-content { height: 100%; min-height: 0; }
 .settings-nav-card { height: 100%; min-height: 0; }
 .settings-nav-content { display: flex; flex: 1; min-height: 0; flex-direction: column; }
@@ -223,10 +226,10 @@ html, body, #app { height: 100%; overflow: hidden; }
 .app-layout[data-collapsed="true"] .sidebar-actions { margin-top: auto; }
 .home-surface { min-height: calc(100dvh - 56px); }
 @media (max-width: 900px) { .home-surface { min-height: calc(100dvh - 40px); } }
-.editor-page { display: flex; flex-direction: column; gap: 16px; height: 100dvh; padding: 28px; max-width: 1280px; margin: 0 auto; min-width: 0; }
+.editor-page { display: flex; flex-direction: column; gap: 16px; height: 100dvh; padding: 16px; width: 100%; max-width: none; margin: 0; min-width: 0; }
 .editor-surface { display: flex; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
 .editor-footer { display: flex; flex-shrink: 0; align-items: center; justify-content: flex-end; gap: 8px; padding: 0 18px; }
-@media (max-width: 900px) { .editor-page { padding: 20px; } }
+@media (max-width: 900px) { .editor-page { padding: 16px; } }
 
 .editor-heading { flex-shrink: 0; }
 
@@ -263,7 +266,9 @@ html, body, #app { height: 100%; overflow: hidden; }
 .organization-grid[data-display="list"] > [data-slot="card"] > [data-slot="card-footer"] { flex-wrap: nowrap; padding-block: 0; }
 @media (max-width: 640px) { .organization-grid[data-display="list"] > [data-slot="card"] { align-items: flex-start; flex-direction: column; } .organization-grid[data-display="list"] > [data-slot="card"] > [data-slot="card-header"] { width: 100%; } .organization-grid[data-display="list"] > [data-slot="card"] > [data-slot="card-footer"] { width: 100%; } }
 
-.home-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; flex-shrink: 0; }
+.home-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 12px; flex-shrink: 0; }
+.home-summary > :nth-child(-n+3) { grid-column: span 2; }
+.home-summary > :nth-child(n+4) { grid-column: span 3; }
 
 .editor-tabs { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 20px; }
 .editor-scroll-content { padding-bottom: 20px; }
@@ -293,3 +298,18 @@ html, body, #app { height: 100%; overflow: hidden; }
 @media (max-width: 560px) { .alarm-date-range { grid-template-columns: minmax(0, 1fr); } }
 .alarm-monthly-options { display: flex; flex-wrap: wrap; gap: 8px; }
 .editor-footer > div:first-child { max-width: min(52%, 360px); }
+
+/* Settings share the same title/description and control alignment. */
+.settings-row, .settings-about-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(220px, 280px); align-items: center; column-gap: 24px; row-gap: 12px; padding-block: 16px; border-bottom: 1px solid var(--border); }
+.settings-row:first-child { padding-top: 0; }
+.settings-row:last-child { border-bottom: 0; }
+.settings-row-copy { display: flex; min-width: 0; flex-direction: column; gap: 6px; }
+.settings-row-control { display: flex; min-width: 0; justify-content: flex-end; }
+.settings-row-control .preference-select { width: 100%; }
+.settings-row-control > [data-slot=tabs] { max-width: 100%; }
+.settings-panel [data-slot=field-group] { gap: 0; }
+.settings-about-row { align-items: start; border-bottom: 0; padding-top: 0; }
+@media (max-width: 850px) {
+  .settings-row, .settings-about-row { grid-template-columns: minmax(0, 1fr); }
+  .settings-row-control { justify-content: flex-start; }
+}

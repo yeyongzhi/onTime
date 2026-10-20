@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { appearance } from '@/stores/appearance'
 import { useRouter } from 'vue-router'
 import { PlusIcon, PencilIcon, Trash2Icon, EyeIcon, XIcon, LayoutGridIcon, ListIcon } from '@lucide/vue'
 import type { Tag } from '@/lib/types'
 import { useAlarmsStore } from '@/stores/alarms'
+import OrganizationColorPicker from '@/components/OrganizationColorPicker.vue'
+import ListPagination from '@/components/ListPagination.vue'
+import { Table, TableHeader, TableHead, TableRow, TableBody, TableCell } from '@/components/ui/table'
 import { Button } from '@/components/ui/button'
 import { InputGroup, InputGroupInput, InputGroupAddon, InputGroupButton } from '@/components/ui/input-group'
 import { Input } from '@/components/ui/input'
@@ -21,7 +25,7 @@ const isGroup = computed(() => props.kind === 'groups')
 const label = computed(() => isGroup.value ? '分组' : '标签')
 const items = computed(() => store.snapshot?.[props.kind] ?? [])
 const query = ref('')
-const displayMode = ref('grid')
+const displayMode = computed({ get: () => appearance.displayMode, set: value => { appearance.displayMode = value as 'grid' | 'list' } })
 const filteredItems = computed(() => items.value.filter(item => item.name.toLocaleLowerCase().includes(query.value.trim().toLocaleLowerCase())))
 function clearName() { query.value=''; document.getElementById('organization-search')?.focus() }
 watch(() => props.kind, () => { query.value = '' })
@@ -41,6 +45,12 @@ async function remove() {
   try { await store.action(isGroup.value ? 'delete_group' : 'delete_tag', { id: deletion.value.id }, `${label.value}已删除`); deletion.value = null } catch { /* Store reports errors. */ }
 }
 function view(id: string) { router.push({ path: '/reminders', query: { [isGroup.value ? 'group' : 'tag']: id } }) }
+const page = ref(1)
+const pageSize = 10
+const totalPages = computed(() => Math.max(1, Math.ceil(filteredItems.value.length / pageSize)))
+const paged = computed(() => filteredItems.value.slice((page.value - 1) * pageSize, page.value * pageSize))
+watch(totalPages, total => { page.value = Math.min(page.value, total) })
+watch([query, () => props.kind], () => { page.value = 1 })
 </script>
 <template>
   <main class="workspace-page organization-page">
@@ -50,14 +60,15 @@ function view(id: string) { router.push({ path: '/reminders', query: { [isGroup.
       <Button :disabled="!store.snapshot || store.busy" @click="edit()"><PlusIcon data-icon="inline-start" />新建{{ label }}</Button>
     </CardContent></Card>
     <Card class="organization-content"><ScrollArea class="min-h-0 flex-1"><CardContent>
-    <div v-if="filteredItems.length" class="grid gap-3 organization-grid" :data-display="displayMode"><Card v-for="item in filteredItems" :key="item.id" size="sm" :class="displayMode === 'list' ? 'p-0' : ''"><CardHeader><CardTitle>{{ item.name }}</CardTitle><CardDescription>包含 {{ count(item.id) }} 个提醒</CardDescription></CardHeader><CardFooter class="flex flex-wrap items-center justify-end gap-1 bg-transparent px-3 pb-3 pt-0 border-t-0">
-      <Tooltip><TooltipTrigger as-child><Button variant="ghost" size="icon-sm" :aria-label="`查看${label}${item.name}的提醒`" @click="view(item.id)"><EyeIcon /></Button></TooltipTrigger><TooltipContent>查看提醒</TooltipContent></Tooltip>
-      <Tooltip><TooltipTrigger as-child><Button variant="ghost" size="icon-sm" :disabled="store.busy" :aria-label="`编辑${label}${item.name}`" @click="edit(item)"><PencilIcon /></Button></TooltipTrigger><TooltipContent>编辑{{ label }}</TooltipContent></Tooltip>
-      <Tooltip><TooltipTrigger as-child><Button variant="ghost" size="icon-sm" :disabled="store.busy" :aria-label="`删除${label}${item.name}`" @click="deletion = item"><Trash2Icon /></Button></TooltipTrigger><TooltipContent>删除{{ label }}</TooltipContent></Tooltip>
+    <Table v-if="filteredItems.length && displayMode === 'list'"><TableHeader><TableRow><TableHead>序号</TableHead><TableHead>{{ label }}名称</TableHead><TableHead>提醒数量</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody><TableRow v-for="(item, index) in paged" :key="item.id"><TableCell class="tabular-nums">{{ (page - 1) * pageSize + index + 1 }}</TableCell><TableCell><div class="flex items-center gap-2"><span class="size-3 shrink-0 rounded-full" :style="{ backgroundColor: item.color }" /><span class="font-medium">{{ item.name }}</span></div></TableCell><TableCell>{{ count(item.id) }} 个提醒</TableCell><TableCell><div class="flex justify-start gap-2"><Button variant="secondary" size="sm" @click="view(item.id)">查看提醒</Button><Button variant="secondary" size="sm" :disabled="store.busy" @click="edit(item)">编辑</Button><Button variant="destructive" size="sm" :disabled="store.busy" @click="deletion = item">删除</Button></div></TableCell></TableRow></TableBody></Table>
+    <div v-else-if="filteredItems.length" class="grid gap-3 organization-grid" :data-display="displayMode"><Card v-for="item in paged" :key="item.id" size="sm" class="data-[size=sm]:gap-1"><CardHeader><CardTitle class="group-data-[size=sm]/card:text-base font-bold">{{ item.name }}</CardTitle><CardDescription>包含 {{ count(item.id) }} 个提醒</CardDescription></CardHeader><CardFooter class="flex flex-wrap items-center justify-end gap-1 bg-transparent px-3 pb-3 pt-0 border-t-0">
+      <Tooltip><TooltipTrigger as-child><Button variant="secondary" size="icon-sm" :aria-label="`查看${label}${item.name}的提醒`" @click="view(item.id)"><EyeIcon /></Button></TooltipTrigger><TooltipContent>查看提醒</TooltipContent></Tooltip>
+      <Tooltip><TooltipTrigger as-child><Button variant="secondary" size="icon-sm" :disabled="store.busy" :aria-label="`编辑${label}${item.name}`" @click="edit(item)"><PencilIcon /></Button></TooltipTrigger><TooltipContent>编辑{{ label }}</TooltipContent></Tooltip>
+      <Tooltip><TooltipTrigger as-child><Button variant="destructive" size="icon-sm" :disabled="store.busy" :aria-label="`删除${label}${item.name}`" @click="deletion = item"><Trash2Icon /></Button></TooltipTrigger><TooltipContent>删除{{ label }}</TooltipContent></Tooltip>
     </CardFooter></Card></div>
-    <Empty v-else><EmptyHeader><EmptyTitle>{{ items.length ? `没有匹配的${label}` : `还没有${label}` }}</EmptyTitle><EmptyDescription>{{ items.length ? '请调整搜索名称。' : isGroup ? '创建分组后，在新建或编辑提醒时选择归属。' : '创建标签后，在新建或编辑提醒时勾选标签。' }}</EmptyDescription></EmptyHeader><EmptyContent><Button variant="outline" :disabled="!store.snapshot" @click="edit()">新建{{ label }}</Button></EmptyContent></Empty>
-    </CardContent></ScrollArea></Card>
-    <Dialog v-model:open="editing"><DialogContent><DialogHeader><DialogTitle>{{ form.id ? '编辑' : '新建' }}{{ label }}</DialogTitle><DialogDescription>{{ isGroup ? '分组用于划分独立的提醒列表。' : '标签用于标记和筛选提醒。' }}</DialogDescription></DialogHeader><form id="organization-form" @submit.prevent="save"><FieldGroup><Field><FieldLabel for="organization-name">名称</FieldLabel><Input id="organization-name" v-model="form.name" maxlength="24" required :disabled="store.busy" /></Field><Field><FieldLabel for="organization-color">颜色</FieldLabel><Input id="organization-color" v-model="form.color" type="color" :disabled="store.busy" /></Field></FieldGroup></form><DialogFooter><Button variant="outline" :disabled="store.busy" @click="editing = false">取消</Button><Button type="submit" form="organization-form" :disabled="store.busy">保存{{ label }}</Button></DialogFooter></DialogContent></Dialog>
-    <Dialog :open="!!deletion" @update:open="value => { if (!value) deletion = null }"><DialogContent><DialogHeader><DialogTitle>删除{{ label }}“{{ deletion?.name }}”？</DialogTitle><DialogDescription>{{ isGroup ? '组内提醒将移至未分组，提醒时间、启用状态和标签保留。' : '从所有提醒上移除此标签，提醒和分组保留。' }}</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" :disabled="store.busy" @click="deletion = null">取消</Button><Button variant="destructive" :disabled="store.busy" @click="remove">删除{{ label }}</Button></DialogFooter></DialogContent></Dialog>
+    <Empty v-else><EmptyHeader><EmptyTitle>{{ items.length ? `没有匹配的${label}` : `还没有${label}` }}</EmptyTitle><EmptyDescription>{{ items.length ? '请调整搜索名称。' : isGroup ? '创建分组后，在新建或编辑提醒时选择归属。' : '创建标签后，在新建或编辑提醒时勾选标签。' }}</EmptyDescription></EmptyHeader><EmptyContent><Button variant="secondary" :disabled="!store.snapshot" @click="edit()">新建{{ label }}</Button></EmptyContent></Empty>
+    </CardContent></ScrollArea><ListPagination v-if="filteredItems.length" v-model="page" :total="filteredItems.length" :page-size="pageSize" /></Card>
+    <Dialog v-model:open="editing"><DialogContent><DialogHeader><DialogTitle>{{ form.id ? '编辑' : '新建' }}{{ label }}</DialogTitle><DialogDescription>{{ isGroup ? '分组用于划分独立的提醒列表。' : '标签用于标记和筛选提醒。' }}</DialogDescription></DialogHeader><form id="organization-form" @submit.prevent="save"><FieldGroup><Field><FieldLabel for="organization-name">名称</FieldLabel><Input id="organization-name" v-model="form.name" maxlength="24" required :disabled="store.busy" /></Field><Field><FieldLabel>颜色</FieldLabel><OrganizationColorPicker v-model="form.color" :disabled="store.busy" /></Field></FieldGroup></form><DialogFooter><Button variant="secondary" :disabled="store.busy" @click="editing = false">取消</Button><Button type="submit" form="organization-form" :disabled="store.busy">保存{{ label }}</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog :open="!!deletion" @update:open="value => { if (!value) deletion = null }"><DialogContent><DialogHeader><DialogTitle>删除{{ label }}“{{ deletion?.name }}”？</DialogTitle><DialogDescription>{{ isGroup ? '组内提醒将移至未分组，提醒时间、启用状态和标签保留。' : '从所有提醒上移除此标签，提醒和分组保留。' }}</DialogDescription></DialogHeader><DialogFooter><Button variant="secondary" :disabled="store.busy" @click="deletion = null">取消</Button><Button variant="destructive" :disabled="store.busy" @click="remove">删除{{ label }}</Button></DialogFooter></DialogContent></Dialog>
   </main>
 </template>

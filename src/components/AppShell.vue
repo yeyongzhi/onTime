@@ -61,15 +61,15 @@ const active = (path: string) => route.path === path || (path === '/reminders' &
         </ScrollArea>
         <Separator v-if="!collapsed" />
         <nav aria-label="应用操作" class="sidebar-actions">
-          <Tooltip><TooltipTrigger as-child><Button variant="ghost" size="icon" :aria-label="collapsed ? '展开侧栏' : '收起侧栏'" :aria-expanded="!collapsed" @click="collapsed = !collapsed"><PanelLeftOpenIcon v-if="collapsed" /><PanelLeftCloseIcon v-else /></Button></TooltipTrigger><TooltipContent side="top">{{ collapsed ? '展开侧栏' : '收起侧栏' }}</TooltipContent></Tooltip>
-          <Tooltip v-if="!collapsed"><TooltipTrigger as-child><Button variant="ghost" size="icon" as-child :data-active="route.path === '/settings'"><RouterLink to="/settings" aria-label="设置" :aria-current="route.path === '/settings' ? 'page' : undefined"><SettingsIcon /></RouterLink></Button></TooltipTrigger><TooltipContent side="top">设置</TooltipContent></Tooltip>
-          <DropdownMenu v-if="!collapsed"><DropdownMenuTrigger as-child><Button variant="ghost" size="icon" aria-label="外观模式" title="外观模式"><SunIcon v-if="!darkMode" /><MoonIcon v-else /></Button></DropdownMenuTrigger><DropdownMenuContent side="top" align="end"><DropdownMenuRadioGroup :model-value="appearance.mode" @update:model-value="setMode"><DropdownMenuRadioItem value="light"><SunIcon />亮色</DropdownMenuRadioItem><DropdownMenuRadioItem value="dark"><MoonIcon />暗色</DropdownMenuRadioItem><DropdownMenuRadioItem value="system"><MonitorIcon />跟随系统</DropdownMenuRadioItem></DropdownMenuRadioGroup></DropdownMenuContent></DropdownMenu>
+          <Tooltip><TooltipTrigger as-child><Button variant="secondary" size="icon" :aria-label="collapsed ? '展开侧栏' : '收起侧栏'" :aria-expanded="!collapsed" @click="collapsed = !collapsed"><PanelLeftOpenIcon v-if="collapsed" /><PanelLeftCloseIcon v-else /></Button></TooltipTrigger><TooltipContent side="top">{{ collapsed ? '展开侧栏' : '收起侧栏' }}</TooltipContent></Tooltip>
+          <DropdownMenu v-if="!collapsed"><DropdownMenuTrigger as-child><Button variant="secondary" size="icon" aria-label="外观模式" title="外观模式"><SunIcon v-if="!darkMode" /><MoonIcon v-else /></Button></DropdownMenuTrigger><DropdownMenuContent side="top" align="end"><DropdownMenuRadioGroup :model-value="appearance.mode" @update:model-value="setMode"><DropdownMenuRadioItem value="light"><SunIcon />亮色</DropdownMenuRadioItem><DropdownMenuRadioItem value="dark"><MoonIcon />暗色</DropdownMenuRadioItem><DropdownMenuRadioItem value="system"><MonitorIcon />跟随系统</DropdownMenuRadioItem></DropdownMenuRadioGroup></DropdownMenuContent></DropdownMenu>
+          <Tooltip v-if="!collapsed"><TooltipTrigger as-child><Button variant="secondary" size="icon" as-child :data-active="route.path === '/settings'"><RouterLink to="/settings" aria-label="设置" :aria-current="route.path === '/settings' ? 'page' : undefined"><SettingsIcon /></RouterLink></Button></TooltipTrigger><TooltipContent side="top">设置</TooltipContent></Tooltip>
         </nav>
       </aside>
       <div class="app-content">
         <ScrollArea class="min-h-0 flex-1"><RouterView /></ScrollArea>
       </div>
-      <Dialog v-model:open="closeNotice"><DialogContent><DialogHeader><DialogTitle>onTime 将继续在后台运行</DialogTitle><DialogDescription>关闭窗口会将 onTime 收到系统托盘，已启用的提醒会继续运行。要完全退出，请右键托盘图标并选择“退出（停止提醒）”。</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" @click="acknowledgeTrayBehavior">留在窗口</Button><Button @click="hideToTray">收到，最小化到托盘</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog v-model:open="closeNotice"><DialogContent><DialogHeader><DialogTitle>onTime 将继续在后台运行</DialogTitle><DialogDescription>关闭窗口会将 onTime 收到系统托盘，已启用的提醒会继续运行。要完全退出，请右键托盘图标并选择“退出（停止提醒）”。</DialogDescription></DialogHeader><DialogFooter><Button variant="secondary" @click="acknowledgeTrayBehavior">留在窗口</Button><Button @click="hideToTray">收到，最小化到托盘</Button></DialogFooter></DialogContent></Dialog>
     </div>
   </TooltipProvider>
 </template>

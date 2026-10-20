@@ -30,5 +30,5 @@ const alarm = computed(() => {
 </script>
 <template>
   <AlarmEditor v-if="store.snapshot && alarm" :key="route.fullPath" :alarm="alarm" @close="back()" />
-  <main v-else class="workspace-page"><Empty><EmptyHeader><EmptyTitle>{{ store.loading ? '正在读取提醒…' : '暂时无法打开提醒' }}</EmptyTitle><EmptyDescription>{{ store.error || '请返回列表检查数据目录或提醒是否存在。' }}</EmptyDescription></EmptyHeader><EmptyContent><Button variant="outline" @click="back()">返回提醒列表</Button></EmptyContent></Empty></main>
+  <main v-else class="workspace-page"><Empty><EmptyHeader><EmptyTitle>{{ store.loading ? '正在读取提醒…' : '暂时无法打开提醒' }}</EmptyTitle><EmptyDescription>{{ store.error || '请返回列表检查数据目录或提醒是否存在。' }}</EmptyDescription></EmptyHeader><EmptyContent><Button variant="secondary" @click="back()">返回提醒列表</Button></EmptyContent></Empty></main>
 </template>
