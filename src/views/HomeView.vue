@@ -55,14 +55,18 @@ const dateStart = shallowRef<DateValue>()
 const dateEnd = shallowRef<DateValue>()
 const startOpen = ref(false)
 const endOpen = ref(false)
-function matchesDate(a: Alarm) {
-  if (!dateStart.value && !dateEnd.value) return true
-  const timestamp = a.kind === 'timer' ? a.deadline : a.repeat === 'once' && a.date ? new Date(`${a.date}T${a.time}:00`).getTime() / 1000 : store.snapshot?.nextRuns[a.id]
-  if (timestamp == null) return false
-  const date = new Date(timestamp * 1000)
-  const day = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-  return (!dateStart.value || day >= dateStart.value.toString()) && (!dateEnd.value || day <= dateEnd.value.toString())
-}
+const dateMatches = ref<string[]>([])
+let dateSequence = 0
+watch([dateStart, dateEnd, () => store.snapshot], async () => {
+  const sequence = ++dateSequence
+  if (!dateStart.value && !dateEnd.value) { dateMatches.value = []; return }
+  const from = dateStart.value ? dateStart.value.toDate(getLocalTimeZone()).getTime() / 1000 : 0
+  const to = dateEnd.value ? dateEnd.value.add({ days: 1 }).toDate(getLocalTimeZone()).getTime() / 1000 : 253402214400
+  try { const ids = await invoke<string[]>('matching_alarm_dates', { from, to }); if (sequence === dateSequence) dateMatches.value = ids } catch (e) { if (sequence === dateSequence) { dateMatches.value = []; toast.error(String(e)) } }
+})
+function matchesDate(a: Alarm) { return (!dateStart.value && !dateEnd.value) || dateMatches.value.includes(a.id) }
+const activities = computed(() => store.snapshot?.occurrences.filter(o => ['ringing', 'snoozed'].includes(o.status)) ?? [])
+async function showActivities() { try { await invoke('show_active_alert') } catch (e) { toast.error(String(e)) } }
 const filtered=computed(() => scoped.value.filter(a => !props.management || (
   a.title.toLowerCase().includes(query.value.toLowerCase()) &&
   (tagFilter.value.length === 0 || tagFilter.value.some(id => a.tags.includes(id))) &&
@@ -87,11 +91,9 @@ async function removeBatch() {
   deletingBatch.value = true
   let deleted = 0
   try {
-    for (const id of ids) {
-      await store.action('delete_alarm', { id })
-      selectedIds.value = selectedIds.value.filter(value => value !== id)
-      deleted++
-    }
+    await store.action('delete_alarms', { ids })
+    selectedIds.value = selectedIds.value.filter(id => !ids.includes(id))
+    deleted = ids.length
     batchDelete.value = false
     toast.success(`已删除 ${deleted} 个提醒`)
   } catch { /* Keep remaining selections available to retry. */ }
@@ -116,16 +118,17 @@ watch([() => store.snapshot, () => Math.floor(store.now / 60), () => props.manag
 const todayPending = computed(() => {
   const end = new Date(store.now * 1000)
   end.setHours(24, 0, 0, 0)
-  return store.snapshot?.alarms.filter(a => {
+  return (store.snapshot?.alarms.filter(a => {
     const time = store.snapshot?.nextRuns[a.id]
     return a.enabled && time !== undefined && time >= store.now && time < end.getTime() / 1000
-  }).length ?? 0
+  }).length ?? 0) + activities.value.filter(o => o.status === 'snoozed' && o.snoozeUntil && o.snoozeUntil >= store.now && o.snoozeUntil < end.getTime() / 1000).length
 })
 const nextRun = computed(() => {
   const snapshot = store.snapshot
   if (!snapshot) return null
   const next = snapshot.alarms.filter(a => a.enabled).map(a => ({ alarm: a, time: snapshot.nextRuns[a.id] })).filter((entry): entry is { alarm: Alarm; time: number } => entry.time !== undefined && entry.time >= store.now).sort((a,b) => a.time-b.time)[0]
-  return next ?? null
+  const snoozed = activities.value.filter(o => o.status === 'snoozed' && o.snoozeUntil && o.snoozeUntil >= store.now).map(o => ({ alarm: snapshot.alarms.find(a => a.id === o.alarmId)!, time: o.snoozeUntil! })).filter(o => o.alarm).sort((a,b) => a.time-b.time)[0]
+  return snoozed && (!next || snoozed.time < next.time) ? snoozed : next ?? null
 })
 const nextCountdown = computed(() => {
   if (!nextRun.value) return '暂无安排'
@@ -159,11 +162,12 @@ watch([query, tagFilter, groupFilter, () => props.management], () => { page.valu
 </script>
 <template>
   <main class="workspace-page reminder-page">
+    <Alert v-if="activities.length" class="shrink-0"><AlertTitle>活动提醒 · {{ activities.length }}</AlertTitle><AlertDescription class="flex flex-wrap items-center gap-3"><span v-for="o in activities" :key="o.id">{{ o.title }} · {{ o.status === 'ringing' ? '响铃中' : `贪睡至 ${dateLabel(o.snoozeUntil!)}` }}</span><Button variant="secondary" @click="showActivities">查看活动提醒</Button></AlertDescription></Alert>
     <section v-if="!management" class="home-summary" aria-label="提醒概览">
-      <Card><CardHeader><CardDescription>今日待提醒</CardDescription><CardTitle class="text-lg font-medium tabular-nums">{{ todayPending }}<span class="ml-2 text-sm text-muted-foreground">个提醒</span></CardTitle><CardDescription>今天剩余的提醒</CardDescription></CardHeader></Card>
+      <Card><CardHeader><CardDescription>今日待提醒</CardDescription><CardTitle class="text-lg font-medium tabular-nums">{{ todayPending }}<span class="ml-2 text-sm text-muted-foreground">个提醒</span></CardTitle><CardDescription>今天剩余的提醒，含贪睡</CardDescription></CardHeader></Card>
       <Card><CardHeader><CardDescription>下一次提醒</CardDescription><CardTitle class="text-lg font-medium tabular-nums">{{ nextRun ? dateLabel(nextRun.time) : '暂无安排' }}</CardTitle><CardDescription class="truncate">{{ nextRun?.alarm.title ?? '启用提醒后显示时间' }}</CardDescription></CardHeader></Card>
       <Card><CardHeader><CardDescription>距离下次提醒</CardDescription><CardTitle class="text-lg font-medium tabular-nums">{{ nextCountdown }}</CardTitle><CardDescription>{{ nextRun ? '倒计时实时更新' : '启用提醒后开始倒计时' }}</CardDescription></CardHeader></Card>
-      <Card><CardHeader><CardDescription>未来 7 天</CardDescription><CardTitle class="text-lg font-medium tabular-nums">{{ homeSummary?.upcoming ?? '—' }}<span class="ml-2 text-sm text-muted-foreground">次提醒</span></CardTitle><CardDescription>{{ summaryError ? '统计暂不可用' : `涉及 ${homeSummary?.reminders ?? 0} 个已启用提醒` }}</CardDescription></CardHeader></Card>
+      <Card><CardHeader><CardDescription>未来 7 天</CardDescription><CardTitle class="text-lg font-medium tabular-nums">{{ homeSummary?.upcoming ?? '—' }}<span class="ml-2 text-sm text-muted-foreground">次提醒</span></CardTitle><CardDescription>{{ summaryError ? '统计暂不可用' : `涉及 ${homeSummary?.reminders ?? 0} 个提醒，含贪睡` }}</CardDescription></CardHeader></Card>
       <Card><CardHeader><CardDescription>今日已处理</CardDescription><CardTitle class="text-lg font-medium tabular-nums">{{ homeSummary?.processed ?? '—' }}<span class="ml-2 text-sm text-muted-foreground">次提醒</span></CardTitle><CardDescription>{{ summaryError ? '统计暂不可用' : '今日计划中已停止或自动停止' }}</CardDescription></CardHeader></Card>
     </section>
     <Card v-else class="shrink-0"><CardContent v-if="management" class="flex flex-col gap-4">      <div v-if="management" class="flex min-w-0 items-center gap-2">

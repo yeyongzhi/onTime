@@ -35,19 +35,19 @@ fn safe_entry(name: &str) -> bool {
         && !sound.contains(':')
 }
 pub fn export_to(root: &Path, destination: &Path) -> Result<(), String> {
+    export_with_unused(root, destination, false)
+}
+pub fn export_with_unused(
+    root: &Path,
+    destination: &Path,
+    include_unused: bool,
+) -> Result<(), String> {
     if destination.extension().and_then(|s| s.to_str()) != Some("zip") {
         return Err("备份文件必须使用 .zip 扩展名，避免覆盖业务数据".into());
     }
-    let mut snap = storage::snapshot(root)?;
     let conn = storage::open(root)?;
-    let mut stmt = conn
-        .prepare("SELECT json FROM occurrences ORDER BY scheduled_at DESC")
-        .map_err(err)?;
-    snap.occurrences = stmt
-        .query_map([], |r| r.get::<_, String>(0))
-        .map_err(err)?
-        .map(|r| serde_json::from_str(&r.map_err(err)?).map_err(err))
-        .collect::<Result<_, _>>()?;
+    conn.execute_batch("BEGIN DEFERRED").map_err(err)?;
+    let snap = storage::snapshot_from(&conn, root, true)?;
     let mut entries = vec![
         (
             "manifest.json".to_string(),
@@ -70,10 +70,21 @@ pub fn export_to(root: &Path, destination: &Path) -> Result<(), String> {
     let mut used = std::collections::BTreeSet::new();
     for alarm in &snap.alarms {
         if let Some(sound) = &alarm.sound
-            && used.insert(sound.clone()) {
-                let path = storage::safe_sound(root, sound)?;
-                entries.push((format!("sounds/{sound}"), fs::read(path).map_err(err)?));
+            && used.insert(sound.clone())
+        {
+            let path = storage::safe_sound(root, sound)?;
+            entries.push((format!("sounds/{sound}"), fs::read(path).map_err(err)?));
+        }
+    }
+    if include_unused {
+        for entry in fs::read_dir(root.join("resources/sounds")).map_err(err)? {
+            let entry = entry.map_err(err)?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.file_type().map_err(err)?.is_file() && used.insert(name.clone()) {
+                let path = storage::safe_sound(root, &name)?;
+                entries.push((format!("sounds/{name}"), fs::read(path).map_err(err)?));
             }
+        }
     }
     if entries.iter().map(|(_, b)| b.len() as u64).sum::<u64>() > LIMIT {
         return Err("备份超过 200 MB，请减少导入铃声后再试".into());
@@ -250,15 +261,17 @@ pub fn import_from(root: &Path, file: &Path) -> Result<String, String> {
             rusqlite::params![
                 a.id,
                 serde_json::to_string(a).map_err(err)?,
-                snap.next_runs.get(&a.id)
+                a.next_after(chrono::Utc::now().timestamp())
             ],
         )
         .map_err(err)?;
     }
     for o in &mut snap.occurrences {
-        if o.status == "ringing" {
-            o.started_at = Some(chrono::Utc::now().timestamp());
-            o.reason = "备份恢复".into();
+        if ["ringing", "snoozed"].contains(&o.status.as_str()) {
+            o.status = "cancelled".into();
+            o.started_at = None;
+            o.snooze_until = None;
+            o.reason = "备份恢复时取消活动提醒".into();
         }
         tx.execute(
             "INSERT INTO occurrences(id,alarm_id,scheduled_at,json) VALUES(?1,?2,?3,?4)",
@@ -285,6 +298,7 @@ pub fn import_from(root: &Path, file: &Path) -> Result<String, String> {
         fs::rename(&temp, &config_path).map_err(err)?;
         return Err(format!("恢复事务失败，原配置已恢复：{commit_error}"));
     }
+    storage::backfill_history_context(&mut conn)?;
     Ok(format!(
         "已恢复 {} 个提醒。原数据备份：{}",
         snap.alarms.len(),
@@ -307,7 +321,9 @@ pub async fn export_backup(app: AppHandle) -> Result<Option<String>, String> {
         let path = file.into_path().map_err(err)?;
         let state = app.state::<Engine>();
         let guard = state.root.lock().map_err(err)?;
-        export_to(guard.as_ref().ok_or("请先选择数据目录")?, &path)?;
+        let source = guard.as_ref().ok_or("请先选择数据目录")?.clone();
+        drop(guard);
+        export_to(&source, &path)?;
         Ok(Some(format!("备份已保存：{}", path.display())))
     })
     .await
@@ -394,6 +410,44 @@ mod tests {
         fs::write(&bad, b"invalid archive").unwrap();
         assert!(import_from(&root, &bad).is_err());
         assert_eq!(storage::snapshot(&root).unwrap().tags.len(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn cleanup_archive_keeps_unreferenced_sounds_recoverable() {
+        let root =
+            std::env::temp_dir().join(format!("ontime-orphan-backup-{}", uuid::Uuid::new_v4()));
+        storage::initialize(&root).unwrap();
+        fs::write(root.join("resources/sounds/orphan.wav"), b"orphan audio").unwrap();
+        let archive = root.join("cleanup.zip");
+        export_with_unused(&root, &archive, true).unwrap();
+        let entries = read_archive(&archive).unwrap();
+        assert_eq!(entries.get("sounds/orphan.wav").unwrap(), b"orphan audio");
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn restoring_backup_cancels_active_instances_and_recomputes_schedule() {
+        let root =
+            std::env::temp_dir().join(format!("ontime-restore-active-{}", uuid::Uuid::new_v4()));
+        storage::initialize(&root).unwrap();
+        let conn = storage::open(&root).unwrap();
+        for status in ["ringing", "snoozed"] {
+            let json = serde_json::json!({"id":status,"alarmId":"deleted", "title":"旧提醒", "scheduledAt":1,"status":status,"snoozeCount":1,"snoozeUntil":9999999999_i64,"startedAt":1,"reason":""});
+            conn.execute(
+                "INSERT INTO occurrences(id,alarm_id,scheduled_at,json) VALUES(?1,'deleted',1,?2)",
+                rusqlite::params![status, json.to_string()],
+            )
+            .unwrap();
+        }
+        drop(conn);
+        let archive = root.join("active.zip");
+        export_to(&root, &archive).unwrap();
+        import_from(&root, &archive).unwrap();
+        let snap = storage::snapshot(&root).unwrap();
+        assert!(
+            snap.occurrences
+                .iter()
+                .all(|o| o.status == "cancelled" && o.snooze_until.is_none())
+        );
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

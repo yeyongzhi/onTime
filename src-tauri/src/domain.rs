@@ -47,6 +47,8 @@ pub struct Tag {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Occurrence {
+    #[serde(default)]
+    pub context: Option<HistoryContext>,
     pub id: String,
     pub alarm_id: String,
     pub title: String,
@@ -56,6 +58,16 @@ pub struct Occurrence {
     pub snooze_until: Option<i64>,
     pub started_at: Option<i64>,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryContext {
+    #[serde(default)]
+    pub inferred: bool,
+    pub kind: String,
+    pub group: Option<Group>,
+    pub tags: Vec<Tag>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -208,6 +220,9 @@ impl Alarm {
         }
         let after_utc = DateTime::<Utc>::from_timestamp(after, 0)?;
         let mut first = after_utc.with_timezone(&Local).date_naive();
+        if self.repeat == "once" {
+            first = NaiveDate::parse_from_str(self.date.as_deref()?, "%Y-%m-%d").ok()?;
+        }
         if let Some(start) = self
             .effective_start
             .as_deref()
@@ -291,6 +306,32 @@ mod tests {
         assert!(eligible_for_catchup(1, 1801));
         assert!(!eligible_for_catchup(1, 1802));
         assert!(!eligible_for_catchup(2, 1));
+    }
+    #[test]
+    fn distant_one_time_date_and_date_range_boundaries() {
+        let mut a = alarm();
+        a.repeat = "once".into();
+        a.date = Some("2035-12-31".into());
+        let now = Local
+            .with_ymd_and_hms(2026, 10, 21, 0, 0, 0)
+            .unwrap()
+            .timestamp();
+        let due = a.next_after(now).unwrap();
+        assert_eq!(
+            DateTime::from_timestamp(due, 0)
+                .unwrap()
+                .with_timezone(&Local)
+                .date_naive()
+                .to_string(),
+            "2035-12-31"
+        );
+        assert!(a.next_after(due).is_none());
+        a.repeat = "daily".into();
+        a.date = None;
+        assert!(
+            a.next_after(now + 86400 - 1)
+                .is_some_and(|t| t >= now + 86400 && t < now + 2 * 86400)
+        );
     }
     #[test]
     fn invalid_rules_rejected() {

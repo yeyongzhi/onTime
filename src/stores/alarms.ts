@@ -12,6 +12,7 @@ export const useAlarmsStore = defineStore('alarms', () => {
   const audioError = ref('')
   const notificationError = ref('')
   const busy = ref(false)
+  const pending = ref<string[]>([])
   const now = ref(Math.floor(Date.now()/1000))
   const active = computed(() => snapshot.value?.occurrences.filter(o => o.status === 'ringing') ?? [])
   let unlisten: UnlistenFn[] = []
@@ -40,12 +41,14 @@ export const useAlarmsStore = defineStore('alarms', () => {
   }
   function stop() { unlisten.forEach(f => f()); unlisten = []; if(timer) clearInterval(timer) }
   async function action<T = void>(command: string, args?: Record<string, unknown>, success?: string): Promise<T | undefined> {
-    if (busy.value) return
-    busy.value = true
+    const independent = ['check_update', 'download_update', 'export_backup', 'import_sound', 'preview_sound'].includes(command)
+    if (pending.value.includes(command) || (!independent && busy.value)) { const message = '操作正在进行，请稍候重试'; toast.error(message); throw new Error(message) }
+    pending.value.push(command)
+    if (!independent) busy.value = true
     if (command === 'preview_sound') audioError.value = ''
     try { const result = await invoke<T>(command, args); await refresh(); if (command === 'choose_data_root' || command === 'import_backup') await loadAppearance(); if(success) toast.success(success); return result }
     catch(e) { toast.error(String(e)); throw e }
-    finally { busy.value = false }
+    finally { pending.value = pending.value.filter(item => item !== command); if (!independent) busy.value = false }
   }
-  return { snapshot, loading, error, audioError, notificationError, busy, now, active, start, stop, refresh, action }
+  return { snapshot, loading, error, audioError, notificationError, busy, pending, now, active, start, stop, refresh, action }
 })

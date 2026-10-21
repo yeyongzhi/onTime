@@ -11,6 +11,8 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_notification::NotificationExt;
 
 pub struct Engine {
+    pub hidden_alerts: Mutex<std::collections::BTreeSet<String>>,
+    pub inspecting_snoozed: std::sync::atomic::AtomicBool,
     pub root: Mutex<Option<PathBuf>>,
     pub audio: AudioHandle,
 }
@@ -93,6 +95,88 @@ fn announce(app: &AppHandle, occurrences: &[Occurrence]) {
 }
 
 #[tauri::command]
+pub fn hide_active_alert(app: AppHandle, state: tauri::State<Engine>) -> Result<(), String> {
+    let guard = root(&state)?;
+    let snap = storage::snapshot(guard.as_ref().unwrap())?;
+    state
+        .inspecting_snoozed
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    state.hidden_alerts.lock().map_err(error)?.extend(
+        snap.occurrences
+            .iter()
+            .filter(|o| o.status == "ringing")
+            .map(|o| o.id.clone()),
+    );
+    if let Some(w) = app.get_webview_window("alert") {
+        w.hide().map_err(error)?;
+    }
+    Ok(())
+}
+#[tauri::command]
+pub fn show_active_alert(app: AppHandle, state: tauri::State<Engine>) -> Result<(), String> {
+    let guard = root(&state)?;
+    let snap = storage::snapshot(guard.as_ref().unwrap())?;
+    if !snap
+        .occurrences
+        .iter()
+        .any(|o| ["ringing", "snoozed"].contains(&o.status.as_str()))
+    {
+        return Err("当前没有活动提醒".into());
+    }
+    state
+        .inspecting_snoozed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    state.hidden_alerts.lock().map_err(error)?.clear();
+    show_alert(&app);
+    Ok(())
+}
+#[tauri::command]
+pub fn delete_alarms(
+    app: AppHandle,
+    state: tauri::State<Engine>,
+    ids: Vec<String>,
+) -> Result<(), String> {
+    let guard = root(&state)?;
+    delete_alarms_database(guard.as_ref().unwrap(), &ids)?;
+    drop(guard);
+    notify(&app);
+    Ok(())
+}
+fn delete_alarms_database(path: &std::path::Path, ids: &[String]) -> Result<(), String> {
+    let mut conn = storage::open(path)?;
+    let tx = conn.transaction().map_err(error)?;
+    for id in ids {
+        cancel_instances(&tx, id)?;
+        tx.execute("DELETE FROM alarms WHERE id=?1", [id])
+            .map_err(error)?;
+    }
+    tx.commit().map_err(error)
+}
+#[tauri::command]
+pub fn matching_alarm_dates(
+    state: tauri::State<Engine>,
+    from: i64,
+    to: i64,
+) -> Result<Vec<String>, String> {
+    if from >= to {
+        return Err("日期范围无效".into());
+    }
+    let guard = root(&state)?;
+    Ok(storage::snapshot(guard.as_ref().unwrap())?
+        .alarms
+        .into_iter()
+        .filter(|a| {
+            let mut candidate = a.clone();
+            candidate.enabled = true;
+            candidate
+                .next_after(from.saturating_sub(1))
+                .is_some_and(|next| next < to)
+        })
+        .map(|a| a.id)
+        .collect())
+}
+
+#[tauri::command]
 pub fn test_notification(app: AppHandle) -> Result<(), String> {
     app.notification()
         .builder()
@@ -118,28 +202,85 @@ pub fn get_snapshot(state: tauri::State<Engine>) -> Result<Option<Snapshot>, Str
     guard.as_ref().map(|p| storage::snapshot(p)).transpose()
 }
 #[tauri::command]
-pub fn get_home_summary(state: tauri::State<Engine>, now: i64, today_start: i64, today_end: i64, week_end: i64) -> Result<serde_json::Value, String> {
+pub fn get_home_summary(
+    state: tauri::State<Engine>,
+    now: i64,
+    today_start: i64,
+    today_end: i64,
+    week_end: i64,
+) -> Result<serde_json::Value, String> {
     let guard = root(&state)?;
     let path = guard.as_ref().unwrap();
     let snap = storage::snapshot(path)?;
     let mut upcoming = 0_u64;
-    let mut reminders = 0_u64;
+    let mut reminder_ids = std::collections::BTreeSet::new();
     for alarm in snap.alarms.iter().filter(|a| a.enabled) {
         let mut cursor = now;
         let mut count = 0;
         // Each current schedule can trigger at most once per local day.
         for _ in 0..9 {
-            let Some(next) = alarm.next_after(cursor) else { break; };
-            if next >= week_end { break; }
+            let Some(next) = alarm.next_after(cursor) else {
+                break;
+            };
+            if next >= week_end {
+                break;
+            }
             count += 1;
             cursor = next;
         }
         upcoming += count;
-        if count > 0 { reminders += 1; }
+        if count > 0 {
+            reminder_ids.insert(alarm.id.clone());
+        }
     }
+    for o in snap.occurrences.iter().filter(|o| {
+        o.status == "snoozed" && o.snooze_until.is_some_and(|t| t >= now && t < week_end)
+    }) {
+        upcoming += 1;
+        reminder_ids.insert(o.alarm_id.clone());
+    }
+    let reminders = reminder_ids.len();
     let conn = storage::open(path)?;
     let processed: i64 = conn.query_row("SELECT count(*) FROM occurrences WHERE scheduled_at>=?1 AND scheduled_at<?2 AND json_extract(json, '$.status') IN ('dismissed','auto_stopped')", params![today_start, today_end], |row| row.get(0)).map_err(error)?;
     Ok(serde_json::json!({"upcoming": upcoming, "reminders": reminders, "processed": processed}))
+}
+
+#[tauri::command]
+pub fn get_history_facets(state: tauri::State<Engine>) -> Result<serde_json::Value, String> {
+    let guard = root(&state)?;
+    let conn = storage::open(guard.as_ref().unwrap())?;
+    let snap = storage::snapshot(guard.as_ref().unwrap())?;
+    let mut groups = snap
+        .groups
+        .into_iter()
+        .map(|g| (g.id.clone(), g))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut tags = snap
+        .tags
+        .into_iter()
+        .map(|g| (g.id.clone(), g))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT json_extract(json,'$.context') FROM occurrences WHERE json_type(json,'$.context')='object'")
+        .map_err(error)?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(error)?;
+    for row in rows {
+        let c: crate::domain::HistoryContext =
+            serde_json::from_str(&row.map_err(error)?).map_err(error)?;
+        {
+            if let Some(g) = c.group {
+                groups.entry(g.id.clone()).or_insert(g);
+            }
+            for t in c.tags {
+                tags.entry(t.id.clone()).or_insert(t);
+            }
+        }
+    }
+    Ok(
+        serde_json::json!({"groups": groups.into_values().collect::<Vec<_>>(), "tags": tags.into_values().collect::<Vec<_>>()}),
+    )
 }
 
 #[tauri::command]
@@ -232,7 +373,7 @@ pub fn create_quick_timer(app: &AppHandle, minutes: u32) -> Result<(), String> {
 pub fn preview_next_runs(mut alarm: Alarm, count: u8) -> Vec<i64> {
     alarm.enabled = true;
     let now = Utc::now().timestamp();
-    if alarm.kind == "timer" {
+    if alarm.kind == "timer" && alarm.deadline.is_none() {
         let Some(deadline) = now.checked_add(alarm.duration_seconds) else {
             return Vec::new();
         };
@@ -249,8 +390,47 @@ pub fn preview_next_runs(mut alarm: Alarm, count: u8) -> Vec<i64> {
     }
     runs
 }
+fn migrate_database(source: &std::path::Path, target: &std::path::Path) -> Result<(), String> {
+    if storage::snapshot(source)?
+        .occurrences
+        .iter()
+        .any(|o| ["ringing", "snoozed"].contains(&o.status.as_str()))
+    {
+        return Err("请先处理响铃和贪睡中的提醒，再迁移数据".into());
+    }
+    let canonical_source = fs::canonicalize(source).map_err(error)?;
+    let canonical_target = fs::canonicalize(target).map_err(error)?;
+    if canonical_target.starts_with(&canonical_source)
+        || canonical_source.starts_with(&canonical_target)
+    {
+        return Err("迁移目标不能是原目录及其父子目录".into());
+    }
+    if fs::read_dir(target).map_err(error)?.next().is_some() {
+        return Err("请选择空目录用于迁移，避免覆盖现有文件".into());
+    }
+    storage::initialize(target)?;
+    let archive = target.join("migration.ontime.zip");
+    crate::backup::export_to(source, &archive)?;
+    crate::backup::import_from(target, &archive)?;
+    if let Ok(entries) = fs::read_dir(source.join("setting")) {
+        fs::create_dir_all(target.join("setting")).map_err(error)?;
+        for entry in entries {
+            let entry = entry.map_err(error)?;
+            if entry.file_type().map_err(error)?.is_file() {
+                fs::copy(entry.path(), target.join("setting").join(entry.file_name()))
+                    .map_err(error)?;
+            }
+        }
+    }
+    fs::remove_file(archive).map_err(error)?;
+    Ok(())
+}
+
 #[tauri::command]
-pub async fn choose_data_root(app: AppHandle) -> Result<Option<Snapshot>, String> {
+pub async fn choose_data_root(
+    app: AppHandle,
+    migrate: Option<bool>,
+) -> Result<Option<Snapshot>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let Some(folder) = app
             .dialog()
@@ -263,6 +443,10 @@ pub async fn choose_data_root(app: AppHandle) -> Result<Option<Snapshot>, String
         let path = folder.into_path().map_err(error)?;
         let state = app.state::<Engine>();
         let mut guard = state.root.lock().map_err(error)?;
+        if migrate.unwrap_or(false) {
+            let source = guard.as_ref().ok_or("请先连接原数据目录")?;
+            migrate_database(source, &path)?;
+        }
         storage::initialize(&path)?;
         apply_clock_change_database(
             &path,
@@ -280,6 +464,10 @@ pub async fn choose_data_root(app: AppHandle) -> Result<Option<Snapshot>, String
         fs::rename(temp, bootstrap.join("bootstrap.json")).map_err(error)?;
         crate::logging::set_root(Some(&path));
         *guard = Some(path);
+        state.hidden_alerts.lock().map_err(error)?.clear();
+        state
+            .inspecting_snoozed
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         state.audio.stop();
         drop(guard);
         notify(&app);
@@ -288,11 +476,26 @@ pub async fn choose_data_root(app: AppHandle) -> Result<Option<Snapshot>, String
     .await
     .map_err(error)?
 }
+fn update_timer_deadline(alarm: &mut Alarm, old: Option<&Alarm>, now: i64, restart: bool) {
+    if alarm.kind == "timer" && alarm.enabled {
+        if restart
+            || old.is_none_or(|a| {
+                !a.enabled || a.kind != "timer" || a.duration_seconds != alarm.duration_seconds
+            })
+        {
+            alarm.deadline = Some(now + alarm.duration_seconds);
+        } else if let Some(old) = old {
+            alarm.deadline = old.deadline;
+        }
+    }
+}
+
 #[tauri::command]
 pub fn save_alarm(
     app: AppHandle,
     state: tauri::State<Engine>,
     mut alarm: Alarm,
+    restart_timer: Option<bool>,
 ) -> Result<(), String> {
     alarm.title = alarm.title.trim().into();
     alarm.validate()?;
@@ -315,13 +518,17 @@ pub fn save_alarm(
     }
     let old = snap.alarms.iter().find(|a| a.id == alarm.id);
     if let Some(old) = old
-        && alarm.revision != old.revision {
-            return Err("提醒已变化，请关闭编辑器后重新打开".into());
-        }
-    alarm.revision = old.map_or(1, |a| a.revision + 1);
-    if alarm.kind == "timer" && alarm.enabled {
-        alarm.deadline = Some(Utc::now().timestamp() + alarm.duration_seconds);
+        && alarm.revision != old.revision
+    {
+        return Err("提醒已变化，请关闭编辑器后重新打开".into());
     }
+    alarm.revision = old.map_or(1, |a| a.revision + 1);
+    update_timer_deadline(
+        &mut alarm,
+        old,
+        Utc::now().timestamp(),
+        restart_timer.unwrap_or(false),
+    );
     if old.is_none() {
         alarm.id = uuid::Uuid::new_v4().to_string();
         alarm.created_at = Utc::now().timestamp();
@@ -552,7 +759,7 @@ pub fn settle_occurrence(
         .into_iter()
         .find(|o| o.id == id)
         .ok_or("提醒不存在")?;
-    if o.status != "ringing" {
+    if o.status != "ringing" && !(o.status == "snoozed" && snooze_minutes.is_none()) {
         return Err("提醒已结束，请刷新".into());
     }
     let a = snap
@@ -783,6 +990,28 @@ fn reconcile_database(
                 }
                 let valid = eligible_for_catchup(due, now);
                 let o = Occurrence {
+                    context: Some(crate::domain::HistoryContext {
+                        inferred: false,
+                        kind: if a.kind == "timer" {
+                            "timer"
+                        } else if a.repeat == "once" {
+                            "once"
+                        } else {
+                            "repeat"
+                        }
+                        .into(),
+                        group: snap
+                            .groups
+                            .iter()
+                            .find(|g| Some(&g.id) == a.group_id.as_ref())
+                            .cloned(),
+                        tags: snap
+                            .tags
+                            .iter()
+                            .filter(|t| a.tags.contains(&t.id))
+                            .cloned()
+                            .collect(),
+                    }),
                     id,
                     alarm_id: a.id.clone(),
                     title: a.title.clone(),
@@ -845,21 +1074,41 @@ fn reconcile_database(
     }
     // Retire exhausted schedules without interrupting ringing or snoozed instances.
     for a in &snap.alarms {
-        if !a.enabled { continue; }
+        if !a.enabled {
+            continue;
+        }
         let one_shot = a.kind == "timer" || a.repeat == "once";
         let end_passed = a.effective_end.as_ref().is_some_and(|end| {
             chrono::DateTime::from_timestamp(now, 0).is_some_and(|date| {
-                end.as_str() < date.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string().as_str()
+                end.as_str()
+                    < date
+                        .with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d")
+                        .to_string()
+                        .as_str()
             })
         });
-        if !one_shot && !end_passed { continue; }
-        let next: Option<i64> = tx.query_row("SELECT next_at FROM alarms WHERE id=?1", [&a.id], |r| r.get(0)).map_err(error)?;
+        if !one_shot && !end_passed {
+            continue;
+        }
+        let next: Option<i64> = tx
+            .query_row("SELECT next_at FROM alarms WHERE id=?1", [&a.id], |r| {
+                r.get(0)
+            })
+            .map_err(error)?;
         let active: i64 = tx.query_row("SELECT count(*) FROM occurrences WHERE alarm_id=?1 AND json_extract(json, '$.status') IN ('ringing','snoozed')", [&a.id], |r| r.get(0)).map_err(error)?;
         if next.is_none() && active == 0 {
             let mut completed = a.clone();
             completed.enabled = false;
             completed.revision += 1;
-            tx.execute("UPDATE alarms SET json=?2 WHERE id=?1", params![completed.id, serde_json::to_string(&completed).map_err(error)?]).map_err(error)?;
+            tx.execute(
+                "UPDATE alarms SET json=?2 WHERE id=?1",
+                params![
+                    completed.id,
+                    serde_json::to_string(&completed).map_err(error)?
+                ],
+            )
+            .map_err(error)?;
             changed = true;
         }
     }
@@ -874,15 +1123,27 @@ pub fn reconcile(app: &AppHandle, state: &Engine, now: i64) -> Result<(), String
     };
     let (changed, announce_list, missed_list) = reconcile_database(path, now)?;
     let updated = storage::snapshot(path)?;
+    let mut hidden = state.hidden_alerts.lock().map_err(error)?;
+    hidden.retain(|id| {
+        updated
+            .occurrences
+            .iter()
+            .any(|o| &o.id == id && o.status == "ringing")
+    });
+    let visible_ring = updated
+        .occurrences
+        .iter()
+        .any(|o| o.status == "ringing" && !hidden.contains(&o.id));
     if let Some(o) = updated
         .occurrences
         .iter()
         .filter(|o| o.status == "ringing")
         .min_by_key(|o| (o.scheduled_at, o.alarm_id.as_str()))
     {
-        if app
-            .get_webview_window("alert")
-            .is_none_or(|w| !w.is_visible().unwrap_or(false))
+        if visible_ring
+            && app
+                .get_webview_window("alert")
+                .is_none_or(|w| !w.is_visible().unwrap_or(false))
         {
             show_alert(app);
         }
@@ -900,10 +1161,16 @@ pub fn reconcile(app: &AppHandle, state: &Engine, now: i64) -> Result<(), String
         }
     } else {
         state.audio.stop_alert();
-        if let Some(w) = app.get_webview_window("alert") {
+        if (!state
+            .inspecting_snoozed
+            .load(std::sync::atomic::Ordering::Relaxed)
+            || !updated.occurrences.iter().any(|o| o.status == "snoozed"))
+            && let Some(w) = app.get_webview_window("alert")
+        {
             let _ = w.hide();
         }
     }
+    drop(hidden);
     drop(guard);
     if !announce_list.is_empty() {
         announce(app, &announce_list);
@@ -948,6 +1215,98 @@ mod scheduler_tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+    #[test]
+    fn migration_copies_data_and_settings_and_preserves_source() {
+        let f = Fixture::new(Utc::now().timestamp() + 600);
+        let target =
+            std::env::temp_dir().join(format!("ontime-migration-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(f.0.join("setting")).unwrap();
+        fs::write(f.0.join("setting/appearance.json"), b"{\"fontSize\":18}").unwrap();
+        migrate_database(&f.0, &target).unwrap();
+        assert_eq!(storage::snapshot(&target).unwrap().alarms.len(), 1);
+        assert_eq!(storage::snapshot(&f.0).unwrap().alarms.len(), 1);
+        assert_eq!(
+            fs::read(target.join("setting/appearance.json")).unwrap(),
+            b"{\"fontSize\":18}"
+        );
+        assert!(migrate_database(&f.0, &target).is_err());
+        assert!(migrate_database(&f.0, &f.0).is_err());
+        fs::remove_dir_all(target).unwrap();
+    }
+    #[test]
+    fn migration_refuses_active_reminders_before_writing_target() {
+        let f = Fixture::new(10000);
+        reconcile_database(&f.0, 10000).unwrap();
+        let target =
+            std::env::temp_dir().join(format!("ontime-active-migration-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&target).unwrap();
+        assert!(migrate_database(&f.0, &target).is_err());
+        assert!(fs::read_dir(&target).unwrap().next().is_none());
+        fs::remove_dir_all(target).unwrap();
+    }
+    #[test]
+    fn batch_delete_rolls_back_cancellation_and_deletion_on_failure() {
+        let f = Fixture::new(10000);
+        reconcile_database(&f.0, 10000).unwrap();
+        let conn = storage::open(&f.0).unwrap();
+        let mut other = storage::snapshot(&f.0).unwrap().alarms.remove(0);
+        other.id = "fail".into();
+        storage::save_alarm(&f.0, &other, None).unwrap();
+        conn.execute_batch("CREATE TRIGGER fail_delete BEFORE DELETE ON alarms WHEN OLD.id='fail' BEGIN SELECT RAISE(ABORT,'test failure'); END;").unwrap();
+        assert!(delete_alarms_database(&f.0, &["timer".into(), "fail".into()]).is_err());
+        let snap = storage::snapshot(&f.0).unwrap();
+        assert_eq!(snap.alarms.len(), 2);
+        assert_eq!(snap.occurrences[0].status, "ringing");
+        conn.execute_batch("DROP TRIGGER fail_delete").unwrap();
+        delete_alarms_database(&f.0, &["timer".into(), "fail".into()]).unwrap();
+        assert!(storage::snapshot(&f.0).unwrap().alarms.is_empty());
+        assert_eq!(
+            storage::snapshot(&f.0).unwrap().occurrences[0].status,
+            "cancelled"
+        );
+    }
+    #[test]
+    fn editing_timer_preserves_deadline_unless_restarted() {
+        let f = Fixture::new(10060);
+        let old = storage::snapshot(&f.0).unwrap().alarms.remove(0);
+        let mut edited = old.clone();
+        edited.title = "修改标题".into();
+        edited.deadline = Some(1);
+        update_timer_deadline(&mut edited, Some(&old), 10030, false);
+        assert_eq!(edited.deadline, Some(10060));
+        update_timer_deadline(&mut edited, Some(&old), 10030, true);
+        assert_eq!(edited.deadline, Some(10090));
+        edited.duration_seconds = 120;
+        update_timer_deadline(&mut edited, Some(&old), 10030, false);
+        assert_eq!(edited.deadline, Some(10150));
+    }
+    #[test]
+    fn occurrence_keeps_context_after_alarm_is_deleted() {
+        let f = Fixture::new(10000);
+        reconcile_database(&f.0, 10000).unwrap();
+        storage::open(&f.0)
+            .unwrap()
+            .execute("DELETE FROM alarms", [])
+            .unwrap();
+        let snap = storage::snapshot(&f.0).unwrap();
+        assert_eq!(snap.occurrences[0].context.as_ref().unwrap().kind, "timer");
+        let page = storage::history_page(
+            &f.0,
+            storage::HistoryFilter {
+                criteria: serde_json::json!({"kind":"timer"}),
+                alarm_ids: None,
+                page: 1,
+                page_size: 20,
+                keyword: String::new(),
+                status: String::new(),
+                from: None,
+                to: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(page.total, 1);
     }
     #[test]
     fn catchup_boundary_and_no_duplicate_after_restart() {

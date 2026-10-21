@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
 import { ref } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { LogicalSize } from '@tauri-apps/api/dpi'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -39,14 +40,15 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 const store=useAlarmsStore()
 const closeConfirm = ref(false)
 async function settle(id:string,minutes:number|null){try{await store.action('settle_occurrence',{id,snoozeMinutes:minutes},minutes === null ? '提醒已停止' : `已延后 ${minutes} 分钟`)}catch{/* toast */}}
-async function hideAlertAndContinue() { closeConfirm.value = false; await getCurrentWindow().hide() }
+async function hideAlertAndContinue() { closeConfirm.value = false; await invoke('hide_active_alert') }
 function snoozeLimit(alarmId:string){return store.snapshot?.alarms.find(a=>a.id===alarmId)?.snoozeLimit??0}
 </script>
 <template>
   <main class="alert-page">
-    <header ref="alertHeader" class="flex shrink-0 items-center gap-3"><div class="alert-emblem"><AlarmClockIcon /></div><div><h1 class="text-2xl font-semibold">{{ store.active.length > 1 ? `${store.active.length} 个提醒同时响铃` : '时间到了' }}</h1><p class="text-sm text-muted-foreground">{{ store.active.length > 1 ? '请逐项停止或延后。' : '先停下来，处理这件重要的小事。' }}</p></div></header>
+    <header ref="alertHeader" class="flex shrink-0 items-center gap-3"><div class="alert-emblem"><AlarmClockIcon /></div><div><h1 class="text-2xl font-semibold">{{ store.active.length > 1 ? `${store.active.length} 个提醒同时响铃` : store.active.length ? '时间到了' : '活动提醒' }}</h1><p class="text-sm text-muted-foreground">{{ store.active.length > 1 ? '请逐项停止或延后。' : '先停下来，处理这件重要的小事。' }}</p></div></header>
     <ScrollArea class="min-h-0 flex-1"><div ref="alertContent" class="flex flex-col gap-4"><Card v-for="o in store.active" :key="o.id"><CardHeader class="alert-reminder-header"><CardTitle class="alert-title">{{ o.title }}</CardTitle><div class="alert-time"><span class="text-sm text-muted-foreground">提醒时间</span><time :datetime="new Date((o.snoozeUntil ?? o.scheduledAt) * 1000).toISOString()" class="font-medium tabular-nums">{{ dateLabel(o.snoozeUntil ?? o.scheduledAt) }}</time></div></CardHeader><CardContent v-if="store.snapshot?.alarms.find(a => a.id === o.alarmId)?.content?.trim()"><p class="whitespace-pre-wrap break-words text-base">{{ store.snapshot?.alarms.find(a => a.id === o.alarmId)?.content }}</p></CardContent><CardFooter class="alert-actions"><Button class="alert-stop" @click="settle(o.id,null)" :disabled="store.busy"><CheckIcon data-icon="inline-start" />停止本次提醒</Button><div class="grid grid-cols-2 gap-3"><Button v-for="m in [5,10]" :key="m" class="alert-snooze" variant="secondary" @click="settle(o.id,m)" :disabled="store.busy||o.snoozeCount>=snoozeLimit(o.alarmId)"><Clock3Icon data-icon="inline-start" />{{ m }} 分钟后再响</Button></div><p class="text-center text-sm text-muted-foreground">{{ o.snoozeCount >= snoozeLimit(o.alarmId) ? '已达到本次贪睡次数上限' : '停止本次提醒，后续重复提醒仍会照常响铃' }}</p></CardFooter></Card>
-    <p v-if="!store.active.length" class="text-muted-foreground">本次提醒已结束。</p>
+    <Card v-for="o in store.snapshot?.occurrences.filter(item => item.status === 'snoozed')" :key="o.id"><CardHeader><CardTitle>{{ o.title }}</CardTitle><p>贪睡至 {{ dateLabel(o.snoozeUntil!) }}</p></CardHeader><CardFooter><Button :disabled="store.busy" @click="settle(o.id,null)">取消本次贪睡</Button></CardFooter></Card>
+    <p v-if="!store.active.length" class="text-muted-foreground">当前没有正在响铃的提醒。</p>
     </div></ScrollArea><Dialog v-model:open="closeConfirm"><DialogContent><DialogHeader><DialogTitle>关闭提醒窗口？</DialogTitle><DialogDescription>收起窗口后，所有正在响铃的提醒会继续响铃。你可以从系统托盘重新打开 onTime。</DialogDescription></DialogHeader><DialogFooter><Button variant="secondary" @click="closeConfirm = false">继续处理提醒</Button><Button @click="hideAlertAndContinue">收起窗口并继续响铃</Button></DialogFooter></DialogContent></Dialog>
   </main>
 </template>

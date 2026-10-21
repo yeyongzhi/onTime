@@ -10,24 +10,26 @@ onTime 是一款轻量、本地优先的桌面提醒应用。定点提醒、倒�
 
 [产品介绍](https://yeyongzhi.github.io/onTime/) · [下载安装包](https://github.com/yeyongzhi/onTime/releases) · [反馈问题](https://github.com/yeyongzhi/onTime/issues)
 
-当前代码版本：**v0.0.1-beta2（预览版）**。
+当前代码版本：**v0.0.1-beta3（预览版）**。发布状态与可用安装包请以对应 Release 页面为准。
 
-[查看本次预发布](https://github.com/yeyongzhi/onTime/releases/tag/v0.0.1-beta2) · [查看全部发布](https://github.com/yeyongzhi/onTime/releases) · [更新日志](docs/changelog.md)
+[查看 beta3 预发布](https://github.com/yeyongzhi/onTime/releases/tag/v0.0.1-beta3) · [查看全部发布](https://github.com/yeyongzhi/onTime/releases) · [更新日志](docs/changelog.md)
 
 ## 你可以用它做什么
 
 - **安排时间**：定点或倒计时；一次性或每天、每周、每月、每季度、每年重复，并可设定提醒生效日期。
 - **选择提醒方式**：独立提醒窗口、系统通知、内置轻铃或导入音频；音量渐强、自动停止、5 / 10 分钟贪睡与次数上限。
 - **管理多个提醒**：分组、彩色标签、搜索与筛选，网格 / 列表切换，批量启用、停用和删除。
-- **回看提醒记录**：本地记录提醒处理结果，支持按名称、状态和时间筛选并分页。
+- **回看提醒记录**：本地记录提醒处理结果，支持按名称、状态、类型、分组、标签和日期筛选并分页，保留触发时分类。
 - **按喜好调整外观**：亮色、暗色、跟随系统，统一品牌紫色，支持圆角、字号、侧栏宽度和折叠。
-- **保管自己的数据**：提醒、分组、标签和历史保存在本地 SQLite；支持每日自动备份、ZIP 导出和恢复，无需注册账号。
+- **保管自己的数据**：提醒、分组、标签和历史保存在本地 SQLite；支持每日自动备份、ZIP 导出和恢复、数据迁移、历史保留策略和未使用铃声清理，无需注册账号。
 
 ## 开始使用
 
 1. 从 [Releases](https://github.com/yeyongzhi/onTime/releases) 下载与你的系统匹配的安装包。实际可用版本和平台以发布文件为准。
 2. 首次启动时选择一个可写、长期可用的本地数据目录。
-3. 点击“新建提醒”，填写名称、时间和铃声，启用后保存。
+3. 在“全部提醒”点击“新建提醒”，填写名称、时间和铃声，启用后保存。
+
+完整说明：[安装与首次启动](https://yeyongzhi.github.io/onTime/guide.html#下载与安装) · [使用指南](https://yeyongzhi.github.io/onTime/guide.html)。
 
 支持 Windows / macOS 安装包。Windows 安装包未签名，首次运行可能出现未知发布者提示；macOS 安装包未完成 Developer ID 签名和公证。
 
@@ -37,9 +39,11 @@ onTime 是一款轻量、本地优先的桌面提醒应用。定点提醒、倒�
 
 数据保存在用户选择的本地目录中；外观偏好保存为 `setting/appearance.json`。系统应用数据目录只保存数据目录定位信息。不要把数据目录放在受保护位置或 `.app` 包内部。
 
-在“设置 → 数据”切换目录时，会打开目标目录的数据，不会自动迁移。迁移前先导出备份，切换后再恢复。恢复会覆盖提醒、标签与记录并取消当前活动提醒，应用会保留恢复前备份。升级前请退出应用并保留数据目录。
+在“设置 → 数据”可以分别选择“切换数据目录”与“迁移数据”。切换读取目标目录；迁移将当前业务数据和设置复制到空目录，成功后切换，原目录保留。迁移前需处理响铃和贪睡中的提醒。
 
-节假日日历来自 [holiday-cn](https://github.com/NateScarlet/holiday-cn)，内置 2025、2026 年日历；缺失当年日历时按普通星期规则计算，可在设置中更新。项目保留其 MIT 授权文件。
+历史默认永久保留，可选择保留 30、90、180 或 365 天；每日备份成功后清理已结束的旧记录。手动清理会先备份业务数据及未使用铃声，再按策略清理；恢复备份会取消其中的响铃与贪睡状态，避免旧提醒再次响起。
+
+重复日程按本地日期与普通星期规则计算。应用检查更新时会同时检测稳定版和预览版；beta1、beta2 的旧检测逻辑不能发现 beta3，需要从 Release 页面手动下载安装。
 
 ## 开发与自动构建
 
@@ -62,11 +66,21 @@ pnpm docs:build
 
 `pnpm dev` 只预览界面，不执行后台提醒。产品站使用 VitePress，源文件位于 `docs/`。
 
-GitHub Actions 在 `dev` / `main` 推送时构建 Windows x64、macOS Apple Silicon 和 Intel 安装包；推送 `v*` 标签会构建并将安装包发布到 GitHub Release。产品站仅在 `main` 分支相关文件变更时构建并部署 GitHub Pages。仓库 Pages 的 Source 需设为 **GitHub Actions**。
+GitHub Actions 在 `dev` / `main` 推送时构建 Windows x64、macOS Apple Silicon 和 Intel 安装包；推送 `v*` 标签会构建并将安装包发布到 GitHub Release。产品站仅在推送 `main` 分支时构建并部署 GitHub Pages。仓库 Pages 的 Source 需设为 **GitHub Actions**。
 
-产品站网址：<https://yeyongzhi.github.io/onTime/>。首次部署是否成功以 Actions 结果为准。
+产品站网址：<https://yeyongzhi.github.io/onTime/>。部署状态以对应提交的 Actions 结果为准。
 
 详细开发资料：[项目说明书](项目说明书.md) · [技术开发说明书](技术开发说明书.md) · [开发进度](开发进度.md)
+
+## 技术栈
+
+| 技术 | 用途 |
+| --- | --- |
+| Vue 3、TypeScript、Pinia | 界面与应用状态 |
+| shadcn-vue、Tailwind CSS | 交互组件与样式 |
+| Tauri 2、Rust | 桌面运行时与后台提醒 |
+| SQLite | 本地提醒及历史存储 |
+| Vite、VitePress | 应用构建与产品文档站 |
 
 ## 联系作者
 

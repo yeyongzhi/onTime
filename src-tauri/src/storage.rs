@@ -23,6 +23,8 @@ pub struct Snapshot {
 #[serde(rename_all = "camelCase")]
 pub struct HistoryFilter {
     #[serde(default)]
+    pub criteria: serde_json::Value,
+    #[serde(default)]
     pub alarm_ids: Option<Vec<String>>,
     pub page: u32,
     pub page_size: u32,
@@ -258,6 +260,7 @@ CREATE TRIGGER IF NOT EXISTS occurrences_project_update AFTER UPDATE OF json ON 
 PRAGMA user_version=5;").map_err(|e| e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())?;
+    backfill_history_context(&mut conn)?;
     for dir in ["resources/sounds", "calendar", "logs", "backups"] {
         fs::create_dir_all(root.join(dir)).map_err(|e| e.to_string())?;
     }
@@ -267,6 +270,47 @@ PRAGMA user_version=5;").map_err(|e| e.to_string())?;
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+pub fn backfill_history_context(conn: &mut Connection) -> Result<(), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let alarms: Vec<Alarm> = read_json(&tx, "SELECT json FROM alarms")?;
+    let groups: Vec<Group> = read_json(&tx, "SELECT json FROM groups")?;
+    let tags: Vec<Tag> = read_json(&tx, "SELECT json FROM tags")?;
+    let records: Vec<Occurrence> = read_json(
+        &tx,
+        "SELECT json FROM occurrences WHERE json_extract(json,'$.context') IS NULL",
+    )?;
+    for mut o in records {
+        if let Some(a) = alarms.iter().find(|a| a.id == o.alarm_id) {
+            o.context = Some(crate::domain::HistoryContext {
+                inferred: true,
+                kind: if a.kind == "timer" {
+                    "timer"
+                } else if a.repeat == "once" {
+                    "once"
+                } else {
+                    "repeat"
+                }
+                .into(),
+                group: groups
+                    .iter()
+                    .find(|g| Some(&g.id) == a.group_id.as_ref())
+                    .cloned(),
+                tags: tags
+                    .iter()
+                    .filter(|t| a.tags.contains(&t.id))
+                    .cloned()
+                    .collect(),
+            });
+            tx.execute(
+                "UPDATE occurrences SET json=?2 WHERE id=?1",
+                params![o.id, serde_json::to_string(&o).map_err(|e| e.to_string())?],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(
@@ -286,16 +330,26 @@ fn read_json<T: serde::de::DeserializeOwned>(
 
 pub fn snapshot(root: &Path) -> Result<Snapshot, String> {
     let conn = open(root)?;
+    conn.execute_batch("BEGIN DEFERRED")
+        .map_err(|e| e.to_string())?;
+    snapshot_from(&conn, root, false)
+}
+
+pub fn snapshot_from(conn: &Connection, root: &Path, full: bool) -> Result<Snapshot, String> {
     Ok(Snapshot {
         data_root: root.to_string_lossy().into(),
-        alarms: read_json(&conn, "SELECT json FROM alarms ORDER BY rowid DESC")?,
-        groups: read_json(&conn, "SELECT json FROM groups ORDER BY rowid")?,
-        tags: read_json(&conn, "SELECT json FROM tags ORDER BY rowid")?,
+        alarms: read_json(conn, "SELECT json FROM alarms ORDER BY rowid DESC")?,
+        groups: read_json(conn, "SELECT json FROM groups ORDER BY rowid")?,
+        tags: read_json(conn, "SELECT json FROM tags ORDER BY rowid")?,
         occurrences: read_json(
-            &conn,
-            "SELECT json FROM occurrences WHERE id IN (SELECT id FROM occurrences ORDER BY scheduled_at DESC LIMIT 500) OR json_extract(json, '$.status') IN ('ringing','snoozed') ORDER BY scheduled_at DESC",
+            conn,
+            if full {
+                "SELECT json FROM occurrences ORDER BY scheduled_at DESC"
+            } else {
+                "SELECT json FROM occurrences WHERE id IN (SELECT id FROM occurrences ORDER BY scheduled_at DESC LIMIT 500) OR json_extract(json, '$.status') IN ('ringing','snoozed') ORDER BY scheduled_at DESC"
+            },
         )?,
-        calendars: read_json(&conn, "SELECT json FROM calendars ORDER BY year DESC")?,
+        calendars: read_json(conn, "SELECT json FROM calendars ORDER BY year DESC")?,
         next_runs: {
             let mut stmt = conn
                 .prepare("SELECT id,next_at FROM alarms WHERE next_at IS NOT NULL")
@@ -320,14 +374,20 @@ pub fn history_page(root: &Path, filter: HistoryFilter) -> Result<HistoryPage, S
         .replace('_', "\\_");
     let pattern = format!("%{keyword}%");
     let status = filter.status.trim();
-    let alarm_ids = filter.alarm_ids.as_ref().map(serde_json::to_string).transpose().map_err(|e| e.to_string())?;
+    let alarm_ids = filter
+        .alarm_ids
+        .as_ref()
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    let criteria = filter.criteria.to_string();
     let total: i64 = conn.query_row(
-        "SELECT count(*) FROM occurrences WHERE (?1='' OR title LIKE ?2 ESCAPE '\\') AND (?3='' OR status=?3) AND (?4 IS NULL OR scheduled_at>=?4) AND (?5 IS NULL OR scheduled_at<?5) AND (?6 IS NULL OR alarm_id IN (SELECT value FROM json_each(?6)))",
-        rusqlite::params![keyword, pattern, status, filter.from, filter.to, alarm_ids],
+        "SELECT count(*) FROM occurrences WHERE (?1='' OR title LIKE ?2 ESCAPE '\\') AND (?3='' OR status=?3) AND (?4 IS NULL OR scheduled_at>=?4) AND (?5 IS NULL OR scheduled_at<?5) AND (?6 IS NULL OR alarm_id IN (SELECT value FROM json_each(?6))) AND (COALESCE(json_extract(?9, '$.kind'),'all')='all' OR json_extract(json,'$.context.kind')=json_extract(?9,'$.kind')) AND (COALESCE(json_extract(?9,'$.group'),'all')='all' OR (json_extract(?9,'$.group')='ungrouped' AND json_type(json,'$.context')='object' AND json_extract(json,'$.context.group.id') IS NULL) OR json_extract(json,'$.context.group.id')=json_extract(?9,'$.group')) AND (COALESCE(json_extract(?9,'$.tag'),'all')='all' OR EXISTS (SELECT 1 FROM json_each(occurrences.json,'$.context.tags') WHERE json_extract(value,'$.id')=json_extract(?9,'$.tag')))",
+        rusqlite::params![keyword, pattern, status, filter.from, filter.to, alarm_ids, 0, 0, criteria],
         |row| row.get(0),
     ).map_err(|e| e.to_string())?;
     let offset = i64::from(page - 1) * i64::from(page_size);
-    let mut stmt = conn.prepare("SELECT json FROM occurrences WHERE (?1='' OR title LIKE ?2 ESCAPE '\\') AND (?3='' OR status=?3) AND (?4 IS NULL OR scheduled_at>=?4) AND (?5 IS NULL OR scheduled_at<?5) AND (?6 IS NULL OR alarm_id IN (SELECT value FROM json_each(?6))) ORDER BY scheduled_at DESC LIMIT ?7 OFFSET ?8").map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT json FROM occurrences WHERE (?1='' OR title LIKE ?2 ESCAPE '\\') AND (?3='' OR status=?3) AND (?4 IS NULL OR scheduled_at>=?4) AND (?5 IS NULL OR scheduled_at<?5) AND (?6 IS NULL OR alarm_id IN (SELECT value FROM json_each(?6))) AND (COALESCE(json_extract(?9, '$.kind'),'all')='all' OR json_extract(json,'$.context.kind')=json_extract(?9,'$.kind')) AND (COALESCE(json_extract(?9,'$.group'),'all')='all' OR (json_extract(?9,'$.group')='ungrouped' AND json_type(json,'$.context')='object' AND json_extract(json,'$.context.group.id') IS NULL) OR json_extract(json,'$.context.group.id')=json_extract(?9,'$.group')) AND (COALESCE(json_extract(?9,'$.tag'),'all')='all' OR EXISTS (SELECT 1 FROM json_each(occurrences.json,'$.context.tags') WHERE json_extract(value,'$.id')=json_extract(?9,'$.tag'))) ORDER BY scheduled_at DESC LIMIT ?7 OFFSET ?8").map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(
             rusqlite::params![
@@ -338,7 +398,8 @@ pub fn history_page(root: &Path, filter: HistoryFilter) -> Result<HistoryPage, S
                 filter.to,
                 alarm_ids,
                 page_size,
-                offset
+                offset,
+                criteria
             ],
             |row| row.get::<_, String>(0),
         )
@@ -368,6 +429,7 @@ pub fn automatic_backup(root: &Path, day: &str) -> Result<(), String> {
         let _ = fs::remove_file(&target);
         return Err(error);
     }
+    crate::maintenance::apply_retention(root)?;
     let mut dated = fs::read_dir(&backups)
         .map_err(|e| e.to_string())?
         .filter_map(Result::ok)
@@ -529,6 +591,7 @@ mod tests {
         save_alarm(&root.0, &a, Some(120)).unwrap();
         let conn = open(&root.0).unwrap();
         let o = Occurrence {
+            context: None,
             id: "o".into(),
             alarm_id: a.id.clone(),
             title: a.title.clone(),
@@ -578,6 +641,7 @@ mod tests {
         let tx = conn.transaction().unwrap();
         for n in 0..=501 {
             let o = Occurrence {
+                context: None,
                 id: format!("record-{n}"),
                 alarm_id: "test".into(),
                 title: "提醒".into(),
@@ -614,6 +678,7 @@ mod tests {
         let conn = open(&root.0).unwrap();
         for n in 0..23 {
             let o = Occurrence {
+                context: None,
                 id: format!("history-{n}"),
                 alarm_id: "test".into(),
                 title: if n % 2 == 0 {
@@ -648,6 +713,7 @@ mod tests {
         let filtered = history_page(
             &root.0,
             HistoryFilter {
+                criteria: serde_json::Value::Null,
                 alarm_ids: None,
                 page: 1,
                 page_size: 10,
@@ -669,6 +735,7 @@ mod tests {
         let second_page = history_page(
             &root.0,
             HistoryFilter {
+                criteria: serde_json::Value::Null,
                 alarm_ids: None,
                 page: 2,
                 page_size: 10,
@@ -681,14 +748,28 @@ mod tests {
         .unwrap();
         assert_eq!(second_page.total, 23);
         assert_eq!(second_page.items.len(), 10);
-        for (ids, expected) in [(vec![], 0), (vec!["missing".to_string()], 0), (vec!["test".to_string()], 23)] {
-            let page = history_page(&root.0, HistoryFilter {
-                alarm_ids: Some(ids), page: 1, page_size: 10, keyword: String::new(), status: String::new(), from: None, to: None,
-            }).unwrap();
+        for (ids, expected) in [
+            (vec![], 0),
+            (vec!["missing".to_string()], 0),
+            (vec!["test".to_string()], 23),
+        ] {
+            let page = history_page(
+                &root.0,
+                HistoryFilter {
+                    criteria: serde_json::Value::Null,
+                    alarm_ids: Some(ids),
+                    page: 1,
+                    page_size: 10,
+                    keyword: String::new(),
+                    status: String::new(),
+                    from: None,
+                    to: None,
+                },
+            )
+            .unwrap();
             assert_eq!(page.total, expected);
             assert_eq!(page.items.len(), expected.min(10) as usize);
         }
-
     }
     #[test]
     fn future_database_version_is_refused_without_modification() {

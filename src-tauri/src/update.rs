@@ -12,7 +12,6 @@ struct Release {
     tag_name: String,
     body: Option<String>,
     draft: bool,
-    prerelease: bool,
     assets: Vec<Asset>,
 }
 #[derive(Deserialize)]
@@ -51,19 +50,51 @@ fn asset_matches(name: &str, os: &str, arch: &str) -> bool {
         _ => false,
     }
 }
-fn process(bytes: &[u8], current: &str, os: &str, arch: &str) -> Result<UpdateInfo, String> {
-    let release: Release =
-        serde_json::from_slice(bytes).map_err(|e| format!("更新信息无效：{e}"))?;
-    if release.draft || release.prerelease {
-        return Err("稳定渠道不接受预发布版本".into());
+fn comparison_version(value: &semver::Version) -> semver::Version {
+    let mut version = value.clone();
+    let pre = version.pre.as_str();
+    if !pre.contains('.')
+        && let Some(index) = pre.find(|c: char| c.is_ascii_digit())
+    {
+        let (prefix, number) = pre.split_at(index);
+        if !prefix.is_empty()
+            && prefix.chars().all(|c| c.is_ascii_alphabetic())
+            && number.chars().all(|c| c.is_ascii_digit())
+            && let Ok(number) = number.parse::<u64>()
+        {
+            version.pre = semver::Prerelease::new(&format!("{prefix}.{number}")).unwrap();
+        }
     }
-    let latest = semver::Version::parse(release.tag_name.trim_start_matches('v'))
-        .map_err(|_| "更新版本号无效")?;
-    if !latest.pre.is_empty() {
-        return Err("稳定渠道不接受预发布版本".into());
-    }
+    version
+}
+
+fn process(
+    releases: Vec<Release>,
+    current: &str,
+    os: &str,
+    arch: &str,
+) -> Result<UpdateInfo, String> {
     let current_version = semver::Version::parse(current).map_err(|_| "当前版本无效")?;
-    let available = latest > current_version;
+    let latest_release = releases
+        .into_iter()
+        .filter(|release| !release.draft)
+        .filter_map(|release| {
+            semver::Version::parse(release.tag_name.trim_start_matches('v'))
+                .ok()
+                .map(|version| (version, release))
+        })
+        .max_by(|(a, _), (b, _)| comparison_version(a).cmp(&comparison_version(b)));
+    let Some((latest, release)) = latest_release else {
+        return Ok(UpdateInfo {
+            current: current.into(),
+            latest: None,
+            available: false,
+            notes: String::new(),
+            url: None,
+            message: "仓库尚无可识别版本号的已发布版本".into(),
+        });
+    };
+    let available = comparison_version(&latest) > comparison_version(&current_version);
     let url = if available {
         let asset = release
             .assets
@@ -89,7 +120,7 @@ fn process(bytes: &[u8], current: &str, os: &str, arch: &str) -> Result<UpdateIn
         message: if available {
             "发现新版本，可下载完整安装包手动升级"
         } else {
-            "已是最新稳定版本"
+            "当前已是最新版本或高于已发布版本"
         }
         .into(),
     })
@@ -103,33 +134,36 @@ pub async fn check_update(app: AppHandle) -> Result<UpdateInfo, String> {
             .user_agent("onTime-update-check")
             .build()
             .map_err(|e| e.to_string())?;
-        let response = client
-            .get("https://api.github.com/repos/yeyongzhi/onTime/releases/latest")
-            .send()
-            .map_err(|e| format!("无法检查更新，当前应用仍可使用：{e}"))?;
-        if response.status() == reqwest::StatusCode::NOT_FOUND {
-            return Ok(UpdateInfo {
-                current,
-                latest: None,
-                available: false,
-                notes: String::new(),
-                url: None,
-                message: "仓库尚未发布稳定版本".into(),
-            });
-        }
-        let response = response
-            .error_for_status()
-            .map_err(|e| format!("更新服务不可用：{e}"))?;
-        let mut bytes = vec![];
-        response
-            .take(1024 * 1024 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|e| e.to_string())?;
-        if bytes.len() > 1024 * 1024 {
-            return Err("更新信息超过大小限制".into());
+        let mut releases = Vec::new();
+        for page in 1..=100 {
+            let response = client
+                .get(format!("https://api.github.com/repos/yeyongzhi/onTime/releases?per_page=100&page={page}"))
+                .send()
+                .map_err(|e| format!("无法检查更新，当前应用仍可使用：{e}"))?;
+            let response = response
+                .error_for_status()
+                .map_err(|e| format!("更新服务不可用：{e}"))?;
+            let mut bytes = vec![];
+            response
+                .take(1024 * 1024 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|e| e.to_string())?;
+            if bytes.len() > 1024 * 1024 {
+                return Err("更新信息超过大小限制".into());
+            }
+            let batch: Vec<Release> = serde_json::from_slice(&bytes)
+                .map_err(|e| format!("更新信息无效：{e}"))?;
+            let finished = batch.len() < 100;
+            releases.extend(batch);
+            if finished {
+                break;
+            }
+            if page == 100 {
+                return Err("发布版本数量超过检查限制".into());
+            }
         }
         process(
-            &bytes,
+            releases,
             &current,
             std::env::consts::OS,
             std::env::consts::ARCH,
@@ -210,7 +244,7 @@ pub async fn download_update(app: AppHandle, url: String) -> Result<Option<Strin
                     .map_err(|e| format!("写入安装包失败：{e}"))?;
                 let percent = total
                     .filter(|size| *size > 0)
-                    .map(|size| ((downloaded.saturating_mul(100) / size).min(100)) as u8);
+                    .map(|size| ((downloaded.saturating_mul(100) / size).min(99)) as u8);
                 let _ = app.emit(
                     "update-download-progress",
                     DownloadProgress {
@@ -225,9 +259,6 @@ pub async fn download_update(app: AppHandle, url: String) -> Result<Option<Strin
             }
             file.flush().map_err(|e| format!("写入安装包失败：{e}"))?;
             drop(file);
-            if target.exists() {
-                fs::remove_file(&target).map_err(|e| format!("无法替换目标文件：{e}"))?;
-            }
             fs::rename(&temporary, &target).map_err(|e| format!("无法保存安装包：{e}"))?;
             let _ = app.emit(
                 "update-download-progress",
@@ -247,11 +278,77 @@ pub async fn download_update(app: AppHandle, url: String) -> Result<Option<Strin
     .await
     .map_err(|e| e.to_string())?
 }
+#[tauri::command]
+pub fn reveal_installer(app: AppHandle, path: String) -> Result<(), String> {
+    let target = std::path::Path::new(&path);
+    if !target.is_file()
+        || !target
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".exe") || n.ends_with(".dmg"))
+    {
+        return Err("安装包不存在或文件名无效".into());
+    }
+    app.opener()
+        .reveal_item_in_dir(target)
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn process(bytes: &[u8], current: &str, os: &str, arch: &str) -> Result<UpdateInfo, String> {
+        super::process(serde_json::from_slice(bytes).unwrap(), current, os, arch)
+    }
+    #[test]
+    fn legacy_beta_numbers_sort_numerically() {
+        let parse = |s| semver::Version::parse(s).unwrap();
+        assert!(
+            comparison_version(&parse("0.0.1-beta10")) > comparison_version(&parse("0.0.1-beta2"))
+        );
+        assert_eq!(
+            comparison_version(&parse("0.0.1-beta2")),
+            comparison_version(&parse("0.0.1-beta.2"))
+        );
+        assert!(comparison_version(&parse("0.0.1")) > comparison_version(&parse("0.0.1-beta10")));
+    }
+    #[test]
+    fn includes_preview_and_stable_releases_in_version_order() {
+        let url = "https://github.com/yeyongzhi/onTime/releases/download/v0.0.1-beta2/onTime_0.0.1-beta2_x64-setup.exe";
+        let beta = process(
+            &release("v0.0.1-beta2", url),
+            "0.0.1-beta1",
+            "windows",
+            "x86_64",
+        )
+        .unwrap();
+        assert!(beta.available);
+        assert_eq!(beta.latest.as_deref(), Some("0.0.1-beta2"));
+        let mut preview: serde_json::Value =
+            serde_json::from_slice(&release("v0.0.1-beta2", url)).unwrap();
+        preview[0]["prerelease"] = true.into();
+        let stable: serde_json::Value = serde_json::from_slice(&release("v0.0.1", url)).unwrap();
+        let mut draft = stable[0].clone();
+        draft["tag_name"] = "v99.0.0".into();
+        draft["draft"] = true.into();
+        let bytes = serde_json::to_vec(&serde_json::json!([preview[0], draft, stable[0]])).unwrap();
+        let result = process(&bytes, "0.0.1-beta2", "windows", "x86_64").unwrap();
+        assert!(result.available);
+        assert_eq!(result.latest.as_deref(), Some("0.0.1"));
+        assert!(
+            !process(&bytes, "0.0.1", "windows", "x86_64")
+                .unwrap()
+                .available
+        );
+        assert!(
+            process(b"[]", "0.0.1", "windows", "x86_64")
+                .unwrap()
+                .latest
+                .is_none()
+        );
+    }
     fn release(tag: &str, url: &str) -> Vec<u8> {
-        serde_json::to_vec(&serde_json::json!({"tag_name":tag,"body":"说明","draft":false,"prerelease":false,"assets":[{"name":"onTime_0.2.0_x64-setup.exe","browser_download_url":url,"size":1024}]})).unwrap()
+        serde_json::to_vec(&serde_json::json!([{"tag_name":tag,"body":"说明","draft":false,"prerelease":false,"assets":[{"name":"onTime_0.2.0_x64-setup.exe","browser_download_url":url,"size":1024}]}])).unwrap()
     }
     #[test]
     fn checks_version_and_rejects_bad_artifacts() {
@@ -275,7 +372,11 @@ mod tests {
             )
             .is_err()
         );
-        assert!(process(&release("v0.2.0-beta.1", url), "0.1.0", "windows", "x86_64").is_err());
+        assert!(
+            process(&release("v0.2.0-beta.1", url), "0.1.0", "windows", "x86_64")
+                .unwrap()
+                .available
+        );
         assert!(process(&release("v0.2.0", url), "0.1.0", "macos", "aarch64").is_err());
     }
 }

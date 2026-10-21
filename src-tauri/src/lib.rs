@@ -4,6 +4,7 @@ mod clock;
 mod domain;
 mod engine;
 mod logging;
+mod maintenance;
 mod preferences;
 mod storage;
 mod update;
@@ -39,9 +40,10 @@ pub fn run() {
                 .ok()
                 .and_then(|b| serde_json::from_slice::<PathBuf>(&b).ok());
             if let Some(path) = root.as_ref().filter(|path| path.join("data.db").is_file())
-                && let Err(e) = storage::initialize(path) {
-                    log::error!("database initialization/migration failed: {e}");
-                }
+                && let Err(e) = storage::initialize(path)
+            {
+                log::error!("database initialization/migration failed: {e}");
+            }
             #[cfg(debug_assertions)]
             let root = if let Some(test_path) = std::env::var_os("ONTIME_TEST_ROOT") {
                 let path = PathBuf::from(test_path);
@@ -53,6 +55,8 @@ pub fn run() {
             logging::install(root.as_deref());
             app.manage(engine::Engine {
                 root: Mutex::new(root),
+                hidden_alerts: Mutex::new(Default::default()),
+                inspecting_snoozed: std::sync::atomic::AtomicBool::new(false),
                 audio: audio::AudioHandle::start(handle.clone()),
             });
             let open = MenuItem::with_id(app, "open", "打开 onTime", true, None::<&str>)?;
@@ -61,7 +65,8 @@ pub fn run() {
             let quick_30 =
                 MenuItem::with_id(app, "quick-30", "快速计时 · 30 分钟", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出（停止提醒）", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &quick_10, &quick_30, &quit])?;
+            let active = MenuItem::with_id(app, "active", "查看活动提醒", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open, &active, &quick_10, &quick_30, &quit])?;
             let mut tray = TrayIconBuilder::new()
                 .tooltip("onTime · 重要时刻，准时提醒")
                 .menu(&menu)
@@ -72,6 +77,10 @@ pub fn run() {
                             let _ = w.show();
                             let _ = w.set_focus();
                         }
+                    }
+                    "active" => {
+                        let _ =
+                            engine::show_active_alert(app.clone(), app.state::<engine::Engine>());
                     }
                     "quick-10" => {
                         if let Err(error) = engine::create_quick_timer(app, 10) {
@@ -94,9 +103,10 @@ pub fn run() {
             }
             tray.build(app)?;
             if std::env::args().any(|a| a == "--tray")
-                && let Some(w) = app.get_webview_window("main") {
-                    let _ = w.hide();
-                }
+                && let Some(w) = app.get_webview_window("main")
+            {
+                let _ = w.hide();
+            }
             std::thread::spawn(move || {
                 let mut last_error = String::new();
                 let mut last_backup_day = String::new();
@@ -194,7 +204,15 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             engine::get_snapshot,
+            maintenance::read_retention,
+            maintenance::save_retention,
+            maintenance::cleanup_data,
+            engine::hide_active_alert,
+            engine::show_active_alert,
+            engine::delete_alarms,
+            engine::matching_alarm_dates,
             engine::get_history,
+            engine::get_history_facets,
             engine::get_home_summary,
             engine::check_alarm_conflicts,
             engine::preview_next_runs,
@@ -215,6 +233,7 @@ pub fn run() {
             backup::export_backup,
             backup::import_backup,
             update::check_update,
+            update::reveal_installer,
             update::download_update,
             update::open_update_link
         ])
