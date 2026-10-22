@@ -3,6 +3,7 @@ import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import { computed, reactive, ref, onUnmounted, watch, nextTick } from 'vue'
 import { Music2Icon, PlayIcon, SquareIcon, ArrowLeftIcon, CalendarDaysIcon } from '@lucide/vue'
 import { getLocalTimeZone, parseDate, today, type DateValue } from '@internationalized/date'
+import { nextIntervalStart, shouldSkipNext } from '@/lib/schedule'
 import type { Alarm } from '@/lib/types'
 import { invoke } from '@tauri-apps/api/core'
 import { toast } from 'vue-sonner'
@@ -19,6 +20,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { Slider } from '@/components/ui/slider'
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Calendar } from '@/components/ui/calendar'
@@ -30,6 +32,31 @@ const form = reactive<Alarm>(JSON.parse(JSON.stringify(props.alarm)))
 if (form.repeat === 'workdays' || form.repeat === 'weekends') {
   form.weekdays = form.repeat === 'workdays' ? [0, 1, 2, 3, 4] : [5, 6]
   form.repeat = 'custom'
+}
+const timeMode = ref(form.intervalMinutes ? String(form.intervalMinutes) : 'custom')
+const customTimes = ref(form.times?.length ? [...form.times] : [form.time])
+const skipNext = ref(false)
+const intervalChanged = ref(false)
+watch(timeMode, value => {
+  intervalChanged.value = true
+  skipNext.value = value !== 'custom' && shouldSkipNext(Number(value))
+})
+watch(skipNext, () => { intervalChanged.value = true })
+function applyTimes(alarm: Alarm) {
+  if (alarm.kind !== 'clock' || alarm.repeat === 'once') return
+  alarm.intervalMinutes = timeMode.value === 'custom' ? null : Number(timeMode.value)
+  if (alarm.intervalMinutes) {
+    alarm.times = []
+    if (intervalChanged.value || !alarm.scheduleStart) {
+      const start = nextIntervalStart(alarm.intervalMinutes, skipNext.value)
+      alarm.scheduleStart = Math.floor(start.getTime() / 1000)
+      alarm.time = `${String(start.getHours()).padStart(2, '0')}:${String(start.getMinutes()).padStart(2, '0')}`
+    }
+  } else {
+    alarm.times = [...new Set(customTimes.value)].sort()
+    alarm.time = alarm.times[0] || form.time
+    alarm.scheduleStart = null
+  }
 }
 const group = computed({ get: () => form.groupId ?? 'ungrouped', set: (value: string) => { form.groupId = value === 'ungrouped' ? null : value } })
 const minutes = ref(form.durationSeconds / 60)
@@ -89,7 +116,7 @@ const saved = ref(false)
 const restartTimer = ref(false)
 const leaveOpen = ref(false)
 let resolveLeave: ((value: boolean) => void) | undefined
-const editorState = () => JSON.stringify([form, minutes.value, selectedDays.value, monthlyDayChoice.value, customMonthlyDay.value, effectivePeriodMode.value, restartTimer.value])
+const editorState = () => JSON.stringify([form, minutes.value, selectedDays.value, monthlyDayChoice.value, customMonthlyDay.value, effectivePeriodMode.value, restartTimer.value, timeMode.value, customTimes.value, skipNext.value])
 const initialEditorState = editorState()
 const dirty = computed(() => !saved.value && editorState() !== initialEditorState)
 function confirmLeave() { if (!dirty.value) return true; leaveOpen.value = true; return new Promise<boolean>(resolve => { resolveLeave = resolve }) }
@@ -121,9 +148,10 @@ let previewSequence = 0
 async function refreshNextPreview() {
   const sequence = ++previewSequence
   if (schedulePreviewTimer) clearTimeout(schedulePreviewTimer)
-  previewingSchedule.value = true
+  if (nextPreview.value === undefined) previewingSchedule.value = true
   schedulePreviewTimer = setTimeout(async () => {
     const alarm = JSON.parse(JSON.stringify(form)) as Alarm
+    applyTimes(alarm)
     if (alarm.kind === 'timer' && (restartTimer.value || !props.alarm.enabled || Number(minutes.value) * 60 !== props.alarm.durationSeconds)) alarm.deadline = null
     alarm.enabled = true
     alarm.weekdays = selectedDays.value.map(Number)
@@ -144,14 +172,17 @@ async function refreshNextPreview() {
     }
   }, 180)
 }
-watch(() => [form.kind, form.repeat, form.time, form.date, form.effectiveStart, form.effectiveEnd, monthlyDayChoice.value, customMonthlyDay.value, selectedDays.value.join(','), minutes.value, restartTimer.value], refreshNextPreview, { immediate: true })
-onUnmounted(() => { if (schedulePreviewTimer) clearTimeout(schedulePreviewTimer) })
+watch(() => [form.kind, form.repeat, form.time, form.date, form.effectiveStart, form.effectiveEnd, monthlyDayChoice.value, customMonthlyDay.value, selectedDays.value.join(','), minutes.value, restartTimer.value, timeMode.value, customTimes.value.join(','), skipNext.value], refreshNextPreview, { immediate: true })
+const livePreviewTimer = setInterval(() => { if (form.kind === 'timer' || (timeMode.value !== 'custom' && (!props.alarm.id || intervalChanged.value))) void refreshNextPreview() }, 1000)
+onUnmounted(() => { clearInterval(livePreviewTimer); ++previewSequence; if (schedulePreviewTimer) clearTimeout(schedulePreviewTimer) })
 async function importSound() { try { const sound = await store.action<string | null>('import_sound'); if(sound) { form.sound = sound; toast.success('铃声已导入') } } catch { /* toast reports */ } }
 async function preview() { try { await store.action('preview_sound', {sound:form.sound,volume:Number(form.volume),stop:previewing.value}); previewing.value=!previewing.value; if(previewTimer)clearTimeout(previewTimer); if(previewing.value)previewTimer=setTimeout(()=>{previewing.value=false},10000) } catch { /* toast reports */ } }
 function useBuiltInSound() { form.sound = null; store.audioError = ''; toast.success('已切换为内置轻铃') }
 async function close() { if(store.busy)return; if(previewing.value) { try { await store.action('preview_sound',{sound:null,volume:0,stop:true}) } catch { /* toast */ } } emit('close') }
 async function save() {
   formError.value=''; errorTarget.value=''
+  applyTimes(form)
+  if (reminderMode.value === 'repeat' && timeMode.value === 'custom' && customTimes.value.some(time => !/^([01]\d|2[0-3]):[0-5]\d$/.test(time))) { invalid('请填写有效的提醒时间', 'alarm-form-error'); return }
   if(!form.title.trim()) { invalid('请填写提醒标题', 'alarm-title'); return }
   if(form.kind === 'timer' && (!Number.isFinite(Number(minutes.value)) || Number(minutes.value) * 60 < 1 || Number(minutes.value) * 60 > 604800)) { invalid('倒计时需为 1 秒到 7 天', 'minutes'); return }
   if (!Number.isInteger(Number(form.ringSeconds)) || Number(form.ringSeconds) < 1 || Number(form.ringSeconds) > 3600) { invalid('自动停止需为 1–3600 秒', 'alarm-duration', 'sound'); return }
@@ -243,7 +274,15 @@ function setEffectivePeriod(value: unknown) {
               <div class="alarm-schedule-bottom">
                 <Field>
                   <FieldLabel>提醒时间</FieldLabel>
-                  <div class="alarm-time-selects"><Select v-model="timeHour"><SelectTrigger aria-label="小时"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem v-for="hour in hourOptions" :key="hour" :value="hour">{{ hour }}</SelectItem></SelectGroup></SelectContent></Select><span aria-hidden="true">:</span><Select v-model="timeMinute"><SelectTrigger aria-label="分钟"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem v-for="minute in minuteOptions" :key="minute" :value="minute">{{ minute }}</SelectItem></SelectGroup></SelectContent></Select></div>
+                  <template v-if="reminderMode === 'repeat'">
+                    <Select v-model="timeMode"><SelectTrigger aria-label="提醒时间模式"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="30">每隔半小时</SelectItem><SelectItem value="60">每隔 1 小时</SelectItem><SelectItem value="120">每隔 2 小时</SelectItem><SelectItem value="custom">自定义多个时间</SelectItem></SelectGroup></SelectContent></Select>
+                    <template v-if="timeMode === 'custom'">
+                      <div v-for="(_, index) in customTimes" :key="index" class="flex items-center gap-2"><Input v-model="customTimes[index]" type="time" :aria-label="`提醒时间 ${index + 1}`" required /><Button type="button" variant="ghost" :disabled="customTimes.length === 1" @click="customTimes.splice(index, 1)">删除</Button></div>
+                      <Button type="button" variant="secondary" :disabled="customTimes.length >= 48" @click="customTimes.push('09:00')">添加提醒时间</Button>
+                    </template>
+                    <template v-else><div class="flex items-center gap-2"><Checkbox id="skip-next" v-model="skipNext" /><FieldLabel for="skip-next">跳过下一个时间点</FieldLabel><Tooltip><TooltipTrigger as-child><Button type="button" variant="ghost" size="sm" aria-label="跳过时间点说明">?</Button></TooltipTrigger><TooltipContent>距下一个时间点不超过 5 分钟时默认勾选，避免刚创建就响铃；仅跳过首次时间点。</TooltipContent></Tooltip></div><FieldDescription>半小时从下一个整点或半点开始，1 / 2 小时从下一个整点开始。</FieldDescription></template>
+                  </template>
+                  <div v-if="reminderMode !== 'repeat'" class="alarm-time-selects"><Select v-model="timeHour"><SelectTrigger aria-label="小时"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem v-for="hour in hourOptions" :key="hour" :value="hour">{{ hour }}</SelectItem></SelectGroup></SelectContent></Select><span aria-hidden="true">:</span><Select v-model="timeMinute"><SelectTrigger aria-label="分钟"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem v-for="minute in minuteOptions" :key="minute" :value="minute">{{ minute }}</SelectItem></SelectGroup></SelectContent></Select></div>
                 </Field>
                 <Field v-if="reminderMode === 'repeat'" class="alarm-repeat-field"><FieldLabel for="alarm-repeat">重复维度</FieldLabel><Select :model-value="form.repeat" @update:model-value="setRepeat"><SelectTrigger id="alarm-repeat" class="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="daily">每天</SelectItem><SelectItem value="custom">每周</SelectItem><SelectItem value="monthly">每月</SelectItem><SelectItem value="quarterly">每季度</SelectItem><SelectItem value="yearly">每年</SelectItem></SelectGroup></SelectContent></Select></Field>
               </div>

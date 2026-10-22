@@ -12,6 +12,12 @@ pub struct Alarm {
     pub enabled: bool,
     pub kind: String,
     pub time: String,
+    #[serde(default)]
+    pub times: Vec<String>,
+    #[serde(default)]
+    pub interval_minutes: Option<u32>,
+    #[serde(default)]
+    pub schedule_start: Option<i64>,
     pub date: Option<String>,
     pub repeat: String,
     #[serde(default)]
@@ -103,6 +109,18 @@ impl Alarm {
             }
         } else {
             NaiveTime::parse_from_str(&self.time, "%H:%M").map_err(|_| "时间格式无效")?;
+            if self
+                .interval_minutes
+                .is_some_and(|n| ![30, 60, 120].contains(&n))
+            {
+                return Err("提醒间隔无效".into());
+            }
+            if self.times.len() > 48 {
+                return Err("最多添加 48 个提醒时间".into());
+            }
+            for time in &self.times {
+                NaiveTime::parse_from_str(time, "%H:%M").map_err(|_| "时间格式无效")?;
+            }
             if ![
                 "once",
                 "daily",
@@ -230,24 +248,45 @@ impl Alarm {
         {
             first = first.max(start);
         }
-        let time = NaiveTime::parse_from_str(&self.time, "%H:%M").ok()?;
+        let mut times = if self.repeat == "once" {
+            vec![self.time.clone()]
+        } else if let Some(interval) = self.interval_minutes.filter(|n| [30, 60, 120].contains(n)) {
+            use chrono::Timelike;
+            let anchor = NaiveTime::parse_from_str(&self.time, "%H:%M").ok()?;
+            let phase = (anchor.hour() * 60 + anchor.minute()) % interval;
+            (phase..1440)
+                .step_by(interval as usize)
+                .map(|n| format!("{:02}:{:02}", n / 60, n % 60))
+                .collect()
+        } else if self.times.is_empty() {
+            vec![self.time.clone()]
+        } else {
+            self.times.clone()
+        };
+        times.sort();
+        times.dedup();
         for offset in 0..=370 {
             let date = first.checked_add_signed(Duration::days(offset))?;
             if !self.applies_on(date) {
                 continue;
             }
             // On a DST overlap use the earlier instant; on a gap advance to the first valid minute.
-            let naive = date.and_time(time);
-            for advance in 0..=180 {
-                if let Some(local) = Local
-                    .from_local_datetime(&(naive + Duration::minutes(advance)))
-                    .earliest()
-                {
-                    let timestamp = local.timestamp();
-                    if timestamp > after {
-                        return Some(timestamp);
+            for time in &times {
+                let naive = date.and_time(NaiveTime::parse_from_str(time, "%H:%M").ok()?);
+                for advance in 0..=180 {
+                    if let Some(local) = Local
+                        .from_local_datetime(&(naive + Duration::minutes(advance)))
+                        .earliest()
+                    {
+                        let timestamp = local.timestamp();
+                        if timestamp > after
+                            && (self.repeat == "once"
+                                || self.schedule_start.is_none_or(|start| timestamp >= start))
+                        {
+                            return Some(timestamp);
+                        }
+                        break;
                     }
-                    break;
                 }
             }
         }
@@ -281,6 +320,9 @@ mod tests {
             enabled: true,
             kind: "clock".into(),
             time: "09:00".into(),
+            times: vec![],
+            interval_minutes: None,
+            schedule_start: None,
             date: None,
             repeat: "workdays".into(),
             monthly_day: None,
@@ -299,6 +341,51 @@ mod tests {
             revision: 1,
             created_at: 0,
         }
+    }
+    #[test]
+    fn multiple_times_are_sorted_and_skip_past_slots() {
+        let mut a = alarm();
+        a.repeat = "daily".into();
+        a.times = vec![
+            "11:00".into(),
+            "09:00".into(),
+            "10:00".into(),
+            "10:00".into(),
+        ];
+        let at = |h, m| {
+            Local
+                .with_ymd_and_hms(2026, 10, 22, h, m, 0)
+                .unwrap()
+                .timestamp()
+        };
+        assert_eq!(a.next_after(at(9, 30)), Some(at(10, 0)));
+        assert_eq!(a.next_after(at(10, 0)), Some(at(11, 0)));
+        a.effective_end = Some("2026-10-22".into());
+        assert_eq!(a.next_after(at(11, 0)), None);
+    }
+    #[test]
+    fn interval_anchor_skip_and_midnight() {
+        let mut a = alarm();
+        a.repeat = "daily".into();
+        a.interval_minutes = Some(120);
+        a.time = "11:00".into();
+        let at = |d, h, m| {
+            Local
+                .with_ymd_and_hms(2026, 10, d, h, m, 0)
+                .unwrap()
+                .timestamp()
+        };
+        a.schedule_start = Some(at(22, 11, 0));
+        assert_eq!(a.next_after(at(22, 8, 59)), Some(at(22, 11, 0)));
+        assert_eq!(a.next_after(at(22, 11, 0)), Some(at(22, 13, 0)));
+        assert_eq!(a.next_after(at(22, 23, 0)), Some(at(23, 1, 0)));
+        a.interval_minutes = Some(30);
+        a.time = "09:00".into();
+        a.schedule_start = None;
+        assert_eq!(a.next_after(at(22, 8, 29)), Some(at(22, 8, 30)));
+        assert_eq!(a.next_after(at(22, 8, 59)), Some(at(22, 9, 0)));
+        a.interval_minutes = Some(0);
+        assert!(a.validate().is_err());
     }
     #[test]
     fn catchup_boundary() {

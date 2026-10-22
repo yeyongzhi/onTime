@@ -327,3 +327,9 @@ html, body, #app { height: 100%; overflow: hidden; }
   .home-summary { grid-template-columns: minmax(0, 1fr); }
   .home-summary > * { grid-column: 1; }
 }
+
+.settings-about-row .about-details { display: contents; }
+.settings-about-row .about-details > * { grid-column: 1 / -1; }
+.settings-about-row .about-details > :first-child { grid-column: 1; grid-row: 1; }
+.settings-about-row > .settings-row-control { grid-column: 2; grid-row: 1; }
+@media (max-width: 760px) { .settings-about-row > .settings-row-control { grid-column: 1; grid-row: 2; } }

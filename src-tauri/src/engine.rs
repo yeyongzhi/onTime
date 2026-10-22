@@ -217,8 +217,8 @@ pub fn get_home_summary(
     for alarm in snap.alarms.iter().filter(|a| a.enabled) {
         let mut cursor = now;
         let mut count = 0;
-        // Each current schedule can trigger at most once per local day.
-        for _ in 0..9 {
+        // At most 48 slots per local day, including the boundary days of the weekly window.
+        for _ in 0..(48 * 9) {
             let Some(next) = alarm.next_after(cursor) else {
                 break;
             };
@@ -965,9 +965,9 @@ fn reconcile_database(
         if let Some(due) = next.filter(|d| *d <= now) {
             // Keep one historical summary and enumerate only the recent catch-up window.
             let mut times = vec![due];
-            if due < now - 1800 && a.kind == "clock" && a.repeat != "once" {
-                let mut cursor = now - 1801;
-                for _ in 0..5 {
+            if a.kind == "clock" && a.repeat != "once" {
+                let mut cursor = due.max(now - 1801);
+                for _ in 0..48 {
                     let Some(t) = a.next_after(cursor) else {
                         break;
                     };
@@ -1321,6 +1321,37 @@ mod scheduler_tests {
         assert!(!snap.alarms[0].enabled);
     }
     #[test]
+    fn multi_time_catchup_persists_all_recent_slots_without_duplicates() {
+        use chrono::TimeZone;
+        let at = |hour, minute| {
+            chrono::Local
+                .with_ymd_and_hms(2026, 10, 22, hour, minute, 0)
+                .unwrap()
+                .timestamp()
+        };
+        let f = Fixture::new(at(9, 0));
+        let mut alarm = storage::snapshot(&f.0).unwrap().alarms.remove(0);
+        alarm.kind = "clock".into();
+        alarm.repeat = "daily".into();
+        alarm.times = vec![
+            "09:00".into(),
+            "09:10".into(),
+            "09:20".into(),
+            "10:00".into(),
+        ];
+        alarm.revision += 1;
+        storage::save_alarm(&f.0, &alarm, Some(at(9, 0))).unwrap();
+        let snapshot = storage::snapshot(&f.0).unwrap();
+        assert_eq!(snapshot.alarms[0].times, alarm.times);
+        assert_eq!(reconcile_database(&f.0, at(9, 25)).unwrap().1.len(), 3);
+        assert_eq!(
+            storage::snapshot(&f.0).unwrap().next_runs.get("timer"),
+            Some(&at(10, 0))
+        );
+        assert!(reconcile_database(&f.0, at(9, 25)).unwrap().1.is_empty());
+        assert_eq!(storage::snapshot(&f.0).unwrap().occurrences.len(), 3);
+    }
+    #[test]
     fn expired_one_shot_is_automatically_disabled() {
         let f = Fixture::new(10000);
         let (_, ringing, missed) = reconcile_database(&f.0, 11801).unwrap();
@@ -1443,4 +1474,16 @@ mod scheduler_tests {
         assert!(reconcile_database(&f.0, 10429).unwrap().1.is_empty());
         assert_eq!(reconcile_database(&f.0, 10430).unwrap().1.len(), 1);
     }
+}
+
+#[tauri::command]
+pub fn open_data_root(app: AppHandle, state: tauri::State<Engine>) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let guard = root(&state)?;
+    app.opener()
+        .open_path(
+            guard.as_ref().unwrap().to_string_lossy().to_string(),
+            None::<&str>,
+        )
+        .map_err(|e| e.to_string())
 }

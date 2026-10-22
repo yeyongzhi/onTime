@@ -52,6 +52,27 @@ pub fn run() {
             } else {
                 root
             };
+            let root = match root {
+                Some(path) => Some(path),
+                None => {
+                    #[cfg(debug_assertions)]
+                    let path = app.path().app_data_dir()?.join("development");
+                    #[cfg(all(not(debug_assertions), target_os = "macos"))]
+                    let path = app.path().app_data_dir()?;
+                    #[cfg(all(not(debug_assertions), not(target_os = "macos")))]
+                    let path = std::env::current_exe()?
+                        .parent()
+                        .ok_or("无法确定安装目录")?
+                        .to_path_buf();
+                    match storage::initialize(&path) {
+                        Ok(()) => Some(path),
+                        Err(error) => {
+                            log::error!("默认数据目录初始化失败：{error}");
+                            None
+                        }
+                    }
+                }
+            };
             logging::install(root.as_deref());
             app.manage(engine::Engine {
                 root: Mutex::new(root),
@@ -220,6 +241,7 @@ pub fn run() {
             preferences::read_appearance,
             preferences::save_appearance,
             engine::choose_data_root,
+            engine::open_data_root,
             engine::save_alarm,
             engine::delete_alarm,
             engine::set_enabled,

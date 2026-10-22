@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Badge } from '@/components/ui/badge'
 import BrandLogo from '@/components/BrandLogo.vue'
 import { computed, onMounted, ref, watch } from 'vue'
 import { invoke, isTauri } from '@tauri-apps/api/core'
@@ -45,7 +46,7 @@ async function cleanupData() {
 const auto = ref(false)
 watch(() => store.snapshot?.dataRoot, () => { void loadRetention() }, { immediate: true })
 const changing = ref(false)
-const version = ref('0.0.1-beta3')
+const version = ref('0.0.1-beta4')
 const notificationPermission = ref<'checking' | 'granted' | 'denied' | 'unsupported'>('checking')
 const reminderRuntimeStatus = computed(() => {
   if (store.error) return `提醒引擎遇到问题：${store.error}`
@@ -107,6 +108,7 @@ async function confirmRestore() { restoreDialog.value = false; await backup('imp
 async function revealInstaller() { if (downloadedInstaller.value) { try { await invoke('reveal_installer', { path: downloadedInstaller.value }) } catch(e) { toast.error(String(e)) } } }
 async function migrateData() { try { const result = await store.action('choose_data_root', { migrate: true }); if (result) toast.success('数据已复制并切换，原目录保留') } catch { /* Store reports errors. */ } }
 async function relocate() { try { const result = await store.action('choose_data_root'); if (result) toast.success('数据目录已连接') } catch { /* Store shows errors. */ } }
+async function openDataRoot() { try { await invoke('open_data_root') } catch(e) { toast.error(String(e)) } }
 </script>
 <template>
   <main class="settings-layout">
@@ -134,15 +136,15 @@ async function relocate() { try { const result = await store.action('choose_data
       </FieldGroup></CardContent></ScrollArea></Card>
       <Card v-else-if="section === 'data'" class="settings-panel"><CardHeader><CardTitle class="settings-panel-heading">数据</CardTitle><CardDescription>切换会读取所选目录的数据；迁移会复制当前提醒、历史、铃声和设置，成功后切换，原目录保留；迁移前需处理所有响铃和贪睡中的提醒。</CardDescription></CardHeader><ScrollArea class="settings-panel-scroll"><CardContent><FieldGroup>
         <Field class="settings-row"><div class="settings-row-copy"><FieldLabel>数据状态</FieldLabel><FieldDescription role="status">{{ store.error || (store.snapshot ? 'SQLite 数据库已连接，提醒与分组标签已在本机加载。' : '尚未连接本地数据库。') }}</FieldDescription></div></Field>
-        <Field class="settings-row"><div class="settings-row-copy"><FieldLabel>数据目录</FieldLabel><FieldDescription class="break-all">{{ store.snapshot?.dataRoot || '尚未选择' }}</FieldDescription></div><div class="settings-row-control"><div><Button variant="secondary" :disabled="store.busy" @click="relocate">{{ store.snapshot ? '切换数据目录' : '选择数据目录' }}</Button><Button v-if="store.snapshot" class="ml-2" variant="secondary" :disabled="store.busy" @click="migrateData">迁移数据</Button></div></div></Field>
+        <Field class="settings-row"><div class="settings-row-copy"><FieldLabel>数据目录</FieldLabel><FieldDescription class="break-all">{{ store.snapshot?.dataRoot || '尚未选择' }}</FieldDescription></div><div class="settings-row-control"><div class="flex flex-wrap gap-2"><Button v-if="store.snapshot" variant="secondary" :disabled="store.busy" @click="openDataRoot">打开本地目录</Button><Button variant="secondary" :disabled="store.busy" @click="relocate">{{ store.snapshot ? '切换数据目录' : '选择数据目录' }}</Button><Button v-if="store.snapshot" variant="secondary" :disabled="store.busy" @click="migrateData">迁移数据</Button></div></div></Field>
       <Field class="settings-row"><div class="settings-row-copy"><FieldLabel>历史保留策略</FieldLabel><FieldDescription>默认永久保留。每日备份成功后清理已结束的旧记录；响铃和贪睡记录保留。</FieldDescription></div><div class="settings-row-control"><Select :model-value="retention" :disabled="maintenanceBusy || !store.snapshot" @update:model-value="saveRetention"><SelectTrigger class="preference-select"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="0">永久保留</SelectItem><SelectItem v-for="days in [30,90,180,365]" :key="days" :value="String(days)">保留 {{ days }} 天</SelectItem></SelectGroup></SelectContent></Select></div></Field><Field class="settings-row"><div class="settings-row-copy"><FieldLabel>数据清理</FieldLabel><FieldDescription>按策略清理历史，并删除未被已保存提醒引用的铃声。请先保存正在编辑的提醒。</FieldDescription></div><div class="settings-row-control"><Button variant="secondary" :disabled="maintenanceBusy || store.busy || !store.snapshot" @click="cleanupDialog = true">清理历史与未使用铃声</Button></div></Field></FieldGroup></CardContent></ScrollArea></Card>
       <Card v-else-if="section === 'backup'" class="settings-panel"><CardHeader><CardTitle class="settings-panel-heading">备份与恢复</CardTitle><CardDescription>导出或恢复本地业务数据。</CardDescription></CardHeader><ScrollArea class="settings-panel-scroll"><CardContent><FieldGroup><Field class="settings-row"><div class="settings-row-copy"><FieldLabel>备份与恢复</FieldLabel><FieldDescription>onTime 每天首次启动后自动备份 SQLite 数据库，保留最近 7 份，存放在数据目录的 backups 文件夹。手动导出包含提醒、分组、标签、提醒历史和铃声；设置项单独保存在本机。恢复会覆盖当前业务数据，并保留恢复前备份。</FieldDescription></div><div class="settings-row-control flex flex-wrap gap-2"><Button variant="secondary" :disabled="store.pending.includes('export_backup') || !store.snapshot" @click="backup('export_backup')">导出数据备份</Button><Button variant="secondary" :disabled="store.busy || !store.snapshot" @click="restoreDialog = true">恢复备份</Button></div></Field></FieldGroup></CardContent></ScrollArea></Card>
       <Card v-else class="settings-panel">
-        <CardHeader><CardTitle class="settings-panel-heading">关于 onTime</CardTitle><CardDescription>版本 {{ version }}</CardDescription></CardHeader>
-        <ScrollArea class="settings-panel-scroll"><CardContent><div class="settings-about-row"><div class="flex min-w-0 flex-col gap-4">
+        <CardHeader><CardTitle class="settings-panel-heading">关于 onTime</CardTitle></CardHeader>
+        <ScrollArea class="settings-panel-scroll"><CardContent><div class="settings-about-row"><div class="about-details flex min-w-0 flex-col gap-4">
           <div class="flex items-center gap-4"><BrandLogo class="size-16" /><div><h2 class="text-xl font-semibold">onTime</h2><p class="text-sm text-muted-foreground">轻量桌面提醒工具</p><p class="mt-1 text-sm text-muted-foreground">要紧的事，到点提醒。</p></div></div>
           <p v-if="checkingUpdate" role="status" aria-live="polite">正在检查稳定版和预览版…</p><p v-if="updateError" role="alert" class="text-sm text-destructive">{{ updateError }}</p>
-          <p v-if="update?.latest" class="text-sm text-muted-foreground">最新版本 {{ update.latest }}</p>
+          <div><Badge variant="secondary">当前版本 {{ version }}</Badge></div><p v-if="update?.available" class="text-sm font-medium">最新版本 {{ update.latest }}</p>
           <p v-if="update" role="status" class="text-sm">{{ update.message }}</p>
 
           <p v-if="downloadingUpdate" class="text-xs text-muted-foreground" role="status" aria-live="polite">正在下载更新{{ updateProgress !== null ? `：${updateProgress}%` : '…' }}</p>
@@ -152,7 +154,7 @@ async function relocate() { try { const result = await store.action('choose_data
             <pre class="whitespace-pre-wrap break-words text-sm text-muted-foreground">{{ update.notes }}</pre>
           </section>
         </div><div class="settings-row-control">          <div class="flex flex-wrap items-center gap-2">
-            <Button variant="secondary" :disabled="checkingUpdate || downloadingUpdate" @click="checkUpdate">{{ checkingUpdate ? '检查中…' : updateError ? '重试检查' : '检查更新' }}</Button>
+            <Button :disabled="checkingUpdate || downloadingUpdate" @click="checkUpdate">{{ checkingUpdate ? '检查中…' : updateError ? '重试检查' : '检查更新' }}</Button>
             <Button v-if="update?.available" variant="secondary" :disabled="downloadingUpdate" @click="downloadUpdate">{{ downloadingUpdate ? updateProgress === null ? '下载中…' : `下载中 ${updateProgress}%` : downloadedInstaller ? '重新下载安装包' : '下载安装包' }}</Button>
             <Button v-if="downloadedInstaller" variant="secondary" @click="revealInstaller">打开所在文件夹</Button>
           </div></div></div></CardContent></ScrollArea>

@@ -1,6 +1,7 @@
 export interface Alarm {
   id: string; title: string; content: string; enabled: boolean; kind: 'clock' | 'timer'; time: string;
   date: string | null; repeat: 'once' | 'daily' | 'workdays' | 'weekends' | 'custom' | 'monthly' | 'quarterly' | 'yearly';
+  times?: string[]; intervalMinutes?: number | null; scheduleStart?: number | null;
   monthlyDay: number | null;
   effectiveStart: string | null; effectiveEnd: string | null;
   weekdays: number[]; durationSeconds: number; deadline: number | null;
