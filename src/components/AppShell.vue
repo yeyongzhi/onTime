@@ -12,8 +12,11 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuRad
 import { Separator } from '@/components/ui/separator'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { useUpdatesStore } from '@/stores/updates'
 import { appearance, darkMode } from '@/stores/appearance'
 const route = useRoute()
+const updates = useUpdatesStore()
+let updateTimer: ReturnType<typeof setInterval> | undefined
 const collapsed = ref(false)
 const closeNotice = ref(false)
 const trayHintKey = 'ontime-tray-close-explained-v1'
@@ -21,6 +24,8 @@ let removeCloseRequest: UnlistenFn | undefined
 let disposed = false
 onMounted(async () => {
   if (!isTauri()) return
+  void updates.checkUpdate(false)
+  updateTimer = setInterval(() => { void updates.checkUpdate(false) }, 6 * 60 * 60 * 1000)
   const unsubscribe = await listen('main-close-request', async () => {
     if (localStorage.getItem(trayHintKey) === 'true') {
       await getCurrentWindow().hide()
@@ -31,7 +36,7 @@ onMounted(async () => {
   if (disposed) unsubscribe()
   else removeCloseRequest = unsubscribe
 })
-onUnmounted(() => { disposed = true; removeCloseRequest?.() })
+onUnmounted(() => { disposed = true; removeCloseRequest?.(); if (updateTimer) clearInterval(updateTimer) })
 function acknowledgeTrayBehavior() {
   localStorage.setItem(trayHintKey, 'true')
   closeNotice.value = false

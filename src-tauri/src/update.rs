@@ -1,26 +1,29 @@
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{Read, Write},
     time::Duration,
 };
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Release {
     tag_name: String,
     body: Option<String>,
     draft: bool,
     assets: Vec<Asset>,
 }
-#[derive(Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct Asset {
     name: String,
     browser_download_url: String,
     size: u64,
+    #[serde(default)]
+    digest: Option<String>,
 }
-#[derive(Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateInfo {
     current: String,
@@ -29,6 +32,10 @@ pub struct UpdateInfo {
     notes: String,
     url: Option<String>,
     message: String,
+    sha256: Option<String>,
+    checked_at: i64,
+    cached: bool,
+    warning: Option<String>,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,7 +46,8 @@ struct DownloadProgress {
 }
 fn valid_download(url: &str) -> bool {
     url.starts_with("https://github.com/yeyongzhi/onTime/releases/download/")
-        && !url.contains(['\r', '\n'])
+        && !url.contains(['\r', '\n', '?', '#', '\\', '%'])
+        && !url.split('/').any(|part| part == "." || part == "..")
 }
 fn asset_matches(name: &str, os: &str, arch: &str) -> bool {
     match (os, arch) {
@@ -92,9 +100,14 @@ fn process(
             notes: String::new(),
             url: None,
             message: "仓库尚无可识别版本号的已发布版本".into(),
+            sha256: None,
+            checked_at: 0,
+            cached: false,
+            warning: None,
         });
     };
     let available = comparison_version(&latest) > comparison_version(&current_version);
+    let mut sha256 = None;
     let url = if available {
         let asset = release
             .assets
@@ -107,6 +120,15 @@ fn process(
         {
             return Err("更新产物或下载地址无效，已拒绝".into());
         }
+        sha256 = Some(
+            asset
+                .digest
+                .as_deref()
+                .and_then(|value| value.strip_prefix("sha256:"))
+                .filter(|value| valid_hash(value))
+                .ok_or("安装包缺少有效的校验信息，请前往发布页下载")?
+                .to_ascii_lowercase(),
+        );
         Some(asset.browser_download_url.clone())
     } else {
         None
@@ -116,6 +138,10 @@ fn process(
         latest: Some(latest.to_string()),
         available,
         notes: release.body.unwrap_or_default(),
+        sha256,
+        checked_at: 0,
+        cached: false,
+        warning: None,
         url,
         message: if available {
             "发现新版本，可下载完整安装包手动升级"
@@ -125,52 +151,25 @@ fn process(
         .into(),
     })
 }
+mod source;
+pub use source::UpdateState;
+fn valid_hash(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|c| c.is_ascii_hexdigit())
+}
 #[tauri::command]
-pub async fn check_update(app: AppHandle) -> Result<UpdateInfo, String> {
-    let current = app.package_info().version.to_string();
-    tauri::async_runtime::spawn_blocking(move || {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(20))
-            .user_agent("onTime-update-check")
-            .build()
-            .map_err(|e| e.to_string())?;
-        let mut releases = Vec::new();
-        for page in 1..=100 {
-            let response = client
-                .get(format!("https://api.github.com/repos/yeyongzhi/onTime/releases?per_page=100&page={page}"))
-                .send()
-                .map_err(|e| format!("无法检查更新，当前应用仍可使用：{e}"))?;
-            let response = response
-                .error_for_status()
-                .map_err(|e| format!("更新服务不可用：{e}"))?;
-            let mut bytes = vec![];
-            response
-                .take(1024 * 1024 + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|e| e.to_string())?;
-            if bytes.len() > 1024 * 1024 {
-                return Err("更新信息超过大小限制".into());
-            }
-            let batch: Vec<Release> = serde_json::from_slice(&bytes)
-                .map_err(|e| format!("更新信息无效：{e}"))?;
-            let finished = batch.len() < 100;
-            releases.extend(batch);
-            if finished {
-                break;
-            }
-            if page == 100 {
-                return Err("发布版本数量超过检查限制".into());
-            }
-        }
-        process(
-            releases,
-            &current,
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-        )
-    })
-    .await
-    .map_err(|e| e.to_string())?
+pub async fn check_update(app: AppHandle, manual: Option<bool>) -> Result<UpdateInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || source::check(&app, manual.unwrap_or(true)))
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+pub fn open_releases(app: AppHandle) -> Result<(), String> {
+    app.opener()
+        .open_url("https://github.com/yeyongzhi/onTime/releases", None::<&str>)
+        .map_err(|e| {
+            log::warn!("无法打开发布页：{e}");
+            "无法打开浏览器，请访问项目 GitHub Releases".into()
+        })
 }
 #[tauri::command]
 pub fn open_update_link(app: AppHandle, url: String) -> Result<(), String> {
@@ -183,10 +182,18 @@ pub fn open_update_link(app: AppHandle, url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn download_update(app: AppHandle, url: String) -> Result<Option<String>, String> {
+pub async fn download_update(
+    app: AppHandle,
+    url: String,
+    sha256: String,
+) -> Result<Option<String>, String> {
     if !valid_download(&url) {
         return Err("只允许下载 onTime 官方仓库安装包".into());
     }
+    if !valid_hash(&sha256) {
+        return Err("安装包校验信息无效，请重新检查更新".into());
+    }
+    source::authorize_download(&app, &url, &sha256)?;
     tauri::async_runtime::spawn_blocking(move || {
         let filename = url
             .rsplit('/')
@@ -228,6 +235,7 @@ pub async fn download_update(app: AppHandle, url: String) -> Result<Option<Strin
             let mut file =
                 fs::File::create(&temporary).map_err(|e| format!("无法创建下载文件：{e}"))?;
             let mut downloaded = 0_u64;
+            let mut hasher = Sha256::new();
             let mut buffer = [0_u8; 64 * 1024];
             loop {
                 let count = response
@@ -240,6 +248,7 @@ pub async fn download_update(app: AppHandle, url: String) -> Result<Option<Strin
                 if downloaded > MAX_DOWNLOAD || total.is_some_and(|size| downloaded > size) {
                     return Err("安装包大小异常，已停止下载".into());
                 }
+                hasher.update(&buffer[..count]);
                 file.write_all(&buffer[..count])
                     .map_err(|e| format!("写入安装包失败：{e}"))?;
                 let percent = total
@@ -257,6 +266,7 @@ pub async fn download_update(app: AppHandle, url: String) -> Result<Option<Strin
             if total.is_some_and(|size| downloaded != size) {
                 return Err("安装包未完整下载".into());
             }
+            verify_digest(&format!("{:x}", hasher.finalize()), &sha256)?;
             file.flush().map_err(|e| format!("写入安装包失败：{e}"))?;
             drop(file);
             fs::rename(&temporary, &target).map_err(|e| format!("无法保存安装包：{e}"))?;
@@ -294,11 +304,27 @@ pub fn reveal_installer(app: AppHandle, path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+fn verify_digest(actual: &str, expected: &str) -> Result<(), String> {
+    if !valid_hash(expected) || !actual.eq_ignore_ascii_case(expected) {
+        return Err("安装包校验失败，已丢弃下载文件，请重试或前往发布页下载".into());
+    }
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     use super::*;
     fn process(bytes: &[u8], current: &str, os: &str, arch: &str) -> Result<UpdateInfo, String> {
         super::process(serde_json::from_slice(bytes).unwrap(), current, os, arch)
+    }
+    #[test]
+    fn installer_hash_is_checked_before_accepting_download() {
+        let actual = format!("{:x}", Sha256::digest(b"installer bytes"));
+        assert!(verify_digest(&actual, &actual.to_uppercase()).is_ok());
+        assert!(verify_digest(&actual, &"0".repeat(64)).is_err());
+        assert!(verify_digest(&actual, "invalid").is_err());
+        assert!(!valid_download(
+            "https://github.com/yeyongzhi/onTime/releases/download/../evil.exe"
+        ));
     }
     #[test]
     fn legacy_beta_numbers_sort_numerically() {
@@ -348,7 +374,7 @@ mod tests {
         );
     }
     fn release(tag: &str, url: &str) -> Vec<u8> {
-        serde_json::to_vec(&serde_json::json!([{"tag_name":tag,"body":"说明","draft":false,"prerelease":false,"assets":[{"name":"onTime_0.2.0_x64-setup.exe","browser_download_url":url,"size":1024}]}])).unwrap()
+        serde_json::to_vec(&serde_json::json!([{"tag_name":tag,"body":"说明","draft":false,"prerelease":false,"assets":[{"name":"onTime_0.2.0_x64-setup.exe","browser_download_url":url,"size":1024,"digest":format!("sha256:{}", "a".repeat(64))}]}])).unwrap()
     }
     #[test]
     fn checks_version_and_rejects_bad_artifacts() {

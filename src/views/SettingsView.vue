@@ -46,7 +46,7 @@ async function cleanupData() {
 const auto = ref(false)
 watch(() => store.snapshot?.dataRoot, () => { void loadRetention() }, { immediate: true })
 const changing = ref(false)
-const version = ref('0.0.1-beta4')
+const version = ref('0.0.1-beta5')
 const notificationPermission = ref<'checking' | 'granted' | 'denied' | 'unsupported'>('checking')
 const reminderRuntimeStatus = computed(() => {
   if (store.error) return `提醒引擎遇到问题：${store.error}`
@@ -66,8 +66,8 @@ function preference(value: unknown, key: 'fontSize' | 'radius' | 'sidebarWidth')
   if (Number.isFinite(numeric) && numeric >= bounds[0]! && numeric <= bounds[1]!) appearance[key] = numeric
 }
 const updates = useUpdatesStore()
-const { update, checkingUpdate, updateError, updateProgress, downloadingUpdate, downloadedInstaller } = storeToRefs(updates)
-const { checkUpdate, downloadUpdate } = updates
+const { update, checkingUpdate, updateError, updateProgress, downloadingUpdate, downloadedInstaller, retryIn } = storeToRefs(updates)
+const { checkUpdate, downloadUpdate, openReleases } = updates
 onMounted(async () => {
   try { auto.value = await isEnabled() } catch { /* Native settings are unavailable in browser previews. */ }
   try { version.value = await getVersion() } catch { /* Keep the package version in browser previews. */ }
@@ -145,7 +145,7 @@ async function openDataRoot() { try { await invoke('open_data_root') } catch(e) 
           <div class="flex items-center gap-4"><BrandLogo class="size-16" /><div><h2 class="text-xl font-semibold">onTime</h2><p class="text-sm text-muted-foreground">轻量桌面提醒工具</p><p class="mt-1 text-sm text-muted-foreground">要紧的事，到点提醒。</p></div></div>
           <p v-if="checkingUpdate" role="status" aria-live="polite">正在检查稳定版和预览版…</p><p v-if="updateError" role="alert" class="text-sm text-destructive">{{ updateError }}</p>
           <div><Badge variant="secondary">当前版本 {{ version }}</Badge></div><p v-if="update?.available" class="text-sm font-medium">最新版本 {{ update.latest }}</p>
-          <p v-if="update" role="status" class="text-sm">{{ update.message }}</p>
+          <p v-if="update" role="status" class="text-sm">{{ update.message }}</p><p v-if="update?.checkedAt" class="text-sm text-muted-foreground">{{ update.cached ? '上次成功检查' : '检查时间' }}：{{ new Date(update.checkedAt * 1000).toLocaleString('zh-CN') }}</p>
 
           <p v-if="downloadingUpdate" class="text-xs text-muted-foreground" role="status" aria-live="polite">正在下载更新{{ updateProgress !== null ? `：${updateProgress}%` : '…' }}</p>
           <p v-if="downloadedInstaller" class="break-all text-xs text-muted-foreground" role="status">安装包已保存至：{{ downloadedInstaller }}</p>
@@ -154,9 +154,9 @@ async function openDataRoot() { try { await invoke('open_data_root') } catch(e) 
             <pre class="whitespace-pre-wrap break-words text-sm text-muted-foreground">{{ update.notes }}</pre>
           </section>
         </div><div class="settings-row-control">          <div class="flex flex-wrap items-center gap-2">
-            <Button :disabled="checkingUpdate || downloadingUpdate" @click="checkUpdate">{{ checkingUpdate ? '检查中…' : updateError ? '重试检查' : '检查更新' }}</Button>
+            <Button :disabled="checkingUpdate || downloadingUpdate || retryIn > 0" @click="checkUpdate()">{{ checkingUpdate ? '检查中…' : retryIn > 0 ? `${retryIn} 秒后重试` : updateError ? '重试检查' : '检查更新' }}</Button>
             <Button v-if="update?.available" variant="secondary" :disabled="downloadingUpdate" @click="downloadUpdate">{{ downloadingUpdate ? updateProgress === null ? '下载中…' : `下载中 ${updateProgress}%` : downloadedInstaller ? '重新下载安装包' : '下载安装包' }}</Button>
-            <Button v-if="downloadedInstaller" variant="secondary" @click="revealInstaller">打开所在文件夹</Button>
+            <Button v-if="downloadedInstaller" variant="secondary" @click="revealInstaller">打开所在文件夹</Button><Button variant="secondary" @click="openReleases">前往发布页</Button>
           </div></div></div></CardContent></ScrollArea>
       </Card>
     </section>

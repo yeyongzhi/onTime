@@ -10,9 +10,9 @@ onTime 是一款轻量、本地优先的桌面提醒应用。定点提醒、倒�
 
 [产品介绍](https://yeyongzhi.github.io/onTime/) · [下载安装包](https://github.com/yeyongzhi/onTime/releases) · [反馈问题](https://github.com/yeyongzhi/onTime/issues)
 
-当前代码版本：**v0.0.1-beta4（预览版）**。发布状态与可用安装包请以对应 Release 页面为准。
+当前代码版本：**v0.0.1-beta5（预览版）**。发布状态与可用安装包请以对应 Release 页面为准。
 
-[查看 beta4 预发布](https://github.com/yeyongzhi/onTime/releases/tag/v0.0.1-beta4) · [查看全部发布](https://github.com/yeyongzhi/onTime/releases) · [更新日志](docs/changelog.md)
+[查看 beta5 预发布](https://github.com/yeyongzhi/onTime/releases/tag/v0.0.1-beta5) · [查看全部发布](https://github.com/yeyongzhi/onTime/releases) · [更新日志](docs/changelog.md)
 
 ## 你可以用它做什么
 
@@ -43,7 +43,7 @@ Windows 新安装默认将数据保存在程序安装目录，macOS 默认使用
 
 历史默认永久保留，可选择保留 30、90、180 或 365 天；每日备份成功后清理已结束的旧记录。手动清理会先备份业务数据及未使用铃声，再按策略清理；恢复备份会取消其中的响铃与贪睡状态，避免旧提醒再次响起。
 
-重复日程按本地日期与普通星期规则计算。应用检查更新时会同时检测稳定版和预览版；beta1、beta2 的旧检测逻辑不能发现 beta3 及后续预览版，需要从 Release 页面手动下载安装。
+重复日程按本地日期与普通星期规则计算。应用优先从官网静态清单检测稳定版和预览版，自动检查最多每 6 小时一次，并保留上次成功结果；官网不可用时有限度地尝试 GitHub API。下载安装包后校验 SHA-256，关于页也可直接前往发布页。beta3 / beta4 遇到 GitHub 限流时，请先手动下载安装 beta5 以启用新机制；beta1 / beta2 同样建议手动升级。
 
 ## 开发与自动构建
 
@@ -66,7 +66,7 @@ pnpm docs:build
 
 `pnpm dev` 只预览界面，不执行后台提醒。产品站使用 VitePress，源文件位于 `docs/`。
 
-GitHub Actions 在 `dev` / `main` 推送时构建 Windows x64、macOS Apple Silicon 和 Intel 安装包；推送 `v*` 标签会构建并将安装包发布到 GitHub Release。产品站仅在推送 `main` 分支时构建并部署 GitHub Pages。仓库 Pages 的 Source 需设为 **GitHub Actions**。
+GitHub Actions 在 `dev` / `main` 推送时构建 Windows x64、macOS Apple Silicon 和 Intel 安装包；推送 `v*` 标签会构建并将安装包发布到 GitHub Release。产品站仅在推送 `main` 分支时构建并部署 GitHub Pages。发布新版本时先集成并推送 `main`，再推送版本标签；站点构建会最多等待 20 分钟，确认当前版本的三个安装包已发布且具备 SHA-256 后生成 `updates.json`，避免提前公布未上传完整的版本。仓库 Pages 的 Source 需设为 **GitHub Actions**。
 
 产品站网址：<https://yeyongzhi.github.io/onTime/>。部署状态以对应提交的 Actions 结果为准。
 

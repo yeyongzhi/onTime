@@ -27,3 +27,9 @@ Windows 新安装默认在程序安装目录中，macOS 默认在系统用户数
 ## 没找到安装包怎么办？
 
 请以 [Releases](https://github.com/yeyongzhi/onTime/releases) 为准。开发分支的自动构建产物保存在 GitHub Actions 中，不代表已经发布稳定版。
+
+## 为什么检查更新显示暂时受限？
+
+GitHub 匿名 API 按出口 IP 限制请求频率，共用网络或代理的其他程序也可能消耗额度。beta5 优先使用官网静态清单，仅在官网不可用时有限度地尝试 API，并遵循服务端等待时间。请按提示稍后重试，或点击“前往发布页”。提醒与本地数据不受影响。
+
+beta3 / beta4 仍使用旧更新源。遇到限流时，请先从 Releases 手动下载安装 beta5。

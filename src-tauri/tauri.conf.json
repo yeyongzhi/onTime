@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "onTime",
-  "version": "0.0.1-beta4",
+  "version": "0.0.1-beta5",
   "identifier": "com.yeyongzhi.ontime",
   "build": {
     "frontendDist": "../dist",
