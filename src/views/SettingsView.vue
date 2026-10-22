@@ -66,8 +66,8 @@ function preference(value: unknown, key: 'fontSize' | 'radius' | 'sidebarWidth')
   if (Number.isFinite(numeric) && numeric >= bounds[0]! && numeric <= bounds[1]!) appearance[key] = numeric
 }
 const updates = useUpdatesStore()
-const { update, checkingUpdate, updateError, updateProgress, downloadingUpdate, downloadedInstaller, retryIn } = storeToRefs(updates)
-const { checkUpdate, downloadUpdate, openReleases } = updates
+const { update, checkingUpdate, updateError, updateProgress, downloadingUpdate, downloadedInstaller, installingUpdate } = storeToRefs(updates)
+const { checkUpdate, downloadUpdate, openReleases, installUpdate } = updates
 onMounted(async () => {
   try { auto.value = await isEnabled() } catch { /* Native settings are unavailable in browser previews. */ }
   try { version.value = await getVersion() } catch { /* Keep the package version in browser previews. */ }
@@ -148,15 +148,16 @@ async function openDataRoot() { try { await invoke('open_data_root') } catch(e) 
           <p v-if="update" role="status" class="text-sm">{{ update.message }}</p><p v-if="update?.checkedAt" class="text-sm text-muted-foreground">{{ update.cached ? '上次成功检查' : '检查时间' }}：{{ new Date(update.checkedAt * 1000).toLocaleString('zh-CN') }}</p>
 
           <p v-if="downloadingUpdate" class="text-xs text-muted-foreground" role="status" aria-live="polite">正在下载更新{{ updateProgress !== null ? `：${updateProgress}%` : '…' }}</p>
-          <p v-if="downloadedInstaller" class="break-all text-xs text-muted-foreground" role="status">安装包已保存至：{{ downloadedInstaller }}</p>
+          <p v-if="downloadedInstaller && !update?.autoInstall" class="break-all text-xs text-muted-foreground" role="status">安装包已保存至：{{ downloadedInstaller }}</p>
+          <p v-if="update?.autoInstall && update.available" class="text-sm text-muted-foreground" role="status">{{ installingUpdate ? '正在准备安装，即将关闭并重新打开 onTime…' : downloadedInstaller ? '更新已下载并通过校验，可安装并重启。' : '更新会自动下载、备份数据并安装到原目录，完成后重新打开应用。' }}</p>
           <section v-if="update?.available && update.notes" class="flex flex-col gap-2">
             <h2 class="text-sm font-semibold">更新内容</h2>
             <pre class="whitespace-pre-wrap break-words text-sm text-muted-foreground">{{ update.notes }}</pre>
           </section>
         </div><div class="settings-row-control">          <div class="flex flex-wrap items-center gap-2">
-            <Button :disabled="checkingUpdate || downloadingUpdate || retryIn > 0" @click="checkUpdate()">{{ checkingUpdate ? '检查中…' : retryIn > 0 ? `${retryIn} 秒后重试` : updateError ? '重试检查' : '检查更新' }}</Button>
-            <Button v-if="update?.available" variant="secondary" :disabled="downloadingUpdate" @click="downloadUpdate">{{ downloadingUpdate ? updateProgress === null ? '下载中…' : `下载中 ${updateProgress}%` : downloadedInstaller ? '重新下载安装包' : '下载安装包' }}</Button>
-            <Button v-if="downloadedInstaller" variant="secondary" @click="revealInstaller">打开所在文件夹</Button><Button variant="secondary" @click="openReleases">前往发布页</Button>
+            <Button :disabled="checkingUpdate || downloadingUpdate || installingUpdate" @click="checkUpdate()">{{ checkingUpdate ? '检查中…' : updateError ? '重试检查' : '检查更新' }}</Button>
+            <Button v-if="update?.available" variant="secondary" :disabled="downloadingUpdate || installingUpdate" @click="update.autoInstall && downloadedInstaller ? installUpdate() : downloadUpdate()">{{ installingUpdate ? '正在安装…' : downloadingUpdate ? updateProgress === null ? '下载中…' : `下载中 ${updateProgress}%` : update.autoInstall ? downloadedInstaller ? '安装并重启' : '更新并重启' : downloadedInstaller ? '重新下载安装包' : '下载安装包' }}</Button>
+            <Button v-if="downloadedInstaller && !update?.autoInstall" variant="secondary" @click="revealInstaller">打开所在文件夹</Button><Button variant="secondary" @click="openReleases">前往发布页</Button>
           </div></div></div></CardContent></ScrollArea>
       </Card>
     </section>

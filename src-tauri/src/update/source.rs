@@ -5,7 +5,6 @@ use std::{path::PathBuf, sync::Mutex};
 const SITE: &str = "https://yeyongzhi.github.io/onTime/updates.json";
 const API: &str = "https://api.github.com/repos/yeyongzhi/onTime/releases?per_page=100&page=1";
 const AUTO_INTERVAL: i64 = 6 * 3600;
-const MANUAL_INTERVAL: i64 = 30;
 #[derive(Default)]
 pub struct UpdateState(pub Mutex<()>);
 #[derive(Default, Serialize, Deserialize)]
@@ -65,12 +64,7 @@ fn save_cache(path: &std::path::Path, cache: &Cache) {
     }
 }
 fn fresh(cache: &Cache, now: i64, manual: bool) -> bool {
-    let interval = if manual {
-        MANUAL_INTERVAL
-    } else {
-        AUTO_INTERVAL
-    };
-    cache.last_attempt > 0 && (0..interval).contains(&(now - cache.last_attempt))
+    !manual && cache.last_attempt > 0 && (0..AUTO_INTERVAL).contains(&(now - cache.last_attempt))
 }
 fn cache_info(cache: &Cache, current: &str, cached: bool) -> Result<UpdateInfo, String> {
     if cache.checked_at == 0 || cache.releases.is_empty() {
@@ -275,24 +269,46 @@ pub(super) fn check(app: &AppHandle, manual: bool) -> Result<UpdateInfo, String>
     save_cache(&path, &cache);
     cache_info(&cache, &current, cache.last_error.is_some())
 }
-pub(super) fn authorize_download(app: &AppHandle, url: &str, hash: &str) -> Result<(), String> {
+pub(super) fn authorize_download(app: &AppHandle, url: &str, hash: &str) -> Result<String, String> {
     let cache = read_cache(&cache_path(app)?);
-    if !cache
-        .releases
-        .iter()
-        .flat_map(|release| &release.assets)
-        .any(|asset| {
+    authorized_version(
+        &cache.releases,
+        &app.package_info().version,
+        url,
+        hash,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    )
+}
+fn authorized_version(
+    releases: &[Release],
+    current: &semver::Version,
+    url: &str,
+    hash: &str,
+    os: &str,
+    arch: &str,
+) -> Result<String, String> {
+    let current = comparison_version(current);
+    for release in releases {
+        let Ok(version) = semver::Version::parse(release.tag_name.trim_start_matches('v')) else {
+            continue;
+        };
+        if release.draft || comparison_version(&version) <= current {
+            continue;
+        }
+        if release.assets.iter().any(|asset| {
             asset.browser_download_url == url
+                && asset_matches(&asset.name, os, arch)
                 && asset
                     .digest
                     .as_deref()
-                    .and_then(|v| v.strip_prefix("sha256:"))
+                    .and_then(|value| value.strip_prefix("sha256:"))
                     .is_some_and(|value| value.eq_ignore_ascii_case(hash))
-        })
-    {
-        return Err("下载信息与已检查的版本不一致，请重新检查更新".into());
+        }) {
+            return Ok(version.to_string());
+        }
     }
-    Ok(())
+    Err("下载信息与当前平台可用的新版本不一致，请重新检查更新".into())
 }
 #[cfg(test)]
 mod tests {
@@ -389,12 +405,47 @@ mod tests {
         );
     }
     #[test]
-    fn cooldown_and_clock_changes() {
+    fn installer_authorization_rejects_downgrades_wrong_platform_and_changed_hash() {
+        let hash = "a".repeat(64);
+        let url = "https://github.com/yeyongzhi/onTime/releases/download/v0.0.1-beta6/onTime_0.0.1-beta6_x64-setup.exe";
+        let releases: Vec<Release> = serde_json::from_value(serde_json::json!([{"tag_name":"v0.0.1-beta6","draft":false,"assets":[{"name":"onTime_0.0.1-beta6_x64-setup.exe","size":1000,"browser_download_url":url,"digest":format!("sha256:{hash}")}]}])).unwrap();
+        let current = semver::Version::parse("0.0.1-beta5").unwrap();
+        assert_eq!(
+            authorized_version(&releases, &current, url, &hash, "windows", "x86_64").unwrap(),
+            "0.0.1-beta6"
+        );
+        assert!(
+            authorized_version(
+                &releases,
+                &semver::Version::parse("0.0.1-beta6").unwrap(),
+                url,
+                &hash,
+                "windows",
+                "x86_64"
+            )
+            .is_err()
+        );
+        assert!(authorized_version(&releases, &current, url, &hash, "macos", "aarch64").is_err());
+        assert!(
+            authorized_version(
+                &releases,
+                &current,
+                url,
+                &"b".repeat(64),
+                "windows",
+                "x86_64"
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn manual_checks_bypass_cache_and_automatic_checks_respect_interval() {
         let cache = Cache {
             last_attempt: 1000,
             ..Default::default()
         };
-        assert!(fresh(&cache, 1029, true));
+        assert!(!fresh(&cache, 1000, true));
+        assert!(!fresh(&cache, 1029, true));
         assert!(!fresh(&cache, 1030, true));
         assert!(fresh(&cache, 1000 + AUTO_INTERVAL - 1, false));
         assert!(!fresh(&cache, 1000 + AUTO_INTERVAL, false));

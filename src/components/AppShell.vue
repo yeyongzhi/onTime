@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { RouterLink, RouterView, useRoute } from 'vue-router'
+import { RouterLink, RouterView, useRoute, onBeforeRouteUpdate } from 'vue-router'
 import { isTauri } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { BellIcon, ListIcon, FolderIcon, TagIcon, HistoryIcon, SettingsIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, SunIcon, MoonIcon, MonitorIcon } from '@lucide/vue'
-import BrandLogo from '@/components/BrandLogo.vue'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem } from '@/components/ui/dropdown-menu'
@@ -16,6 +15,7 @@ import { useUpdatesStore } from '@/stores/updates'
 import { appearance, darkMode } from '@/stores/appearance'
 const route = useRoute()
 const updates = useUpdatesStore()
+onBeforeRouteUpdate(() => !updates.installingUpdate)
 let updateTimer: ReturnType<typeof setInterval> | undefined
 const collapsed = ref(false)
 const closeNotice = ref(false)
@@ -24,6 +24,7 @@ let removeCloseRequest: UnlistenFn | undefined
 let disposed = false
 onMounted(async () => {
   if (!isTauri()) return
+  void updates.showInstallResult()
   void updates.checkUpdate(false)
   updateTimer = setInterval(() => { void updates.checkUpdate(false) }, 6 * 60 * 60 * 1000)
   const unsubscribe = await listen('main-close-request', async () => {
@@ -53,9 +54,6 @@ const active = (path: string) => route.path === path || (path === '/reminders' &
   <TooltipProvider>
     <div class="app-layout" :data-collapsed="collapsed" :style="{ '--navigation-width': collapsed ? '48px' : `${appearance.sidebarWidth}px` }">
       <aside class="app-sidebar">
-        <RouterLink to="/" aria-label="onTime 首页" class="flex items-center gap-2 p-2" :class="collapsed ? 'justify-center' : 'px-3 py-4'">
-          <BrandLogo class="size-8" /><span v-if="!collapsed" class="font-semibold tracking-tight">onTime</span>
-        </RouterLink>
         <ScrollArea class="min-h-0 flex-1">
           <nav aria-label="主导航" class="flex flex-col gap-1 p-3">
             <Tooltip v-for="item in nav" :key="item.path">

@@ -75,6 +75,7 @@ pub fn run() {
             };
             logging::install(root.as_deref());
             app.manage(update::UpdateState::default());
+            app.manage(update::installer::InstallState::default());
             app.manage(engine::Engine {
                 root: Mutex::new(root),
                 hidden_alerts: Mutex::new(Default::default()),
@@ -256,6 +257,8 @@ pub fn run() {
             backup::export_backup,
             backup::import_backup,
             update::check_update,
+            update::installer::install_downloaded_update,
+            update::installer::take_update_result,
             update::open_releases,
             update::reveal_installer,
             update::download_update,

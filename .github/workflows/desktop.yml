@@ -48,6 +48,9 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib --locked
       - name: Build installer
         run: pnpm tauri:build --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+      - name: Windows automatic update worker integration
+        if: runner.os == 'Windows'
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/windows-update-worker.test.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: onTime-${{ matrix.target }}

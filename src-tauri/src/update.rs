@@ -36,6 +36,7 @@ pub struct UpdateInfo {
     checked_at: i64,
     cached: bool,
     warning: Option<String>,
+    auto_install: bool,
 }
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -104,6 +105,7 @@ fn process(
             checked_at: 0,
             cached: false,
             warning: None,
+            auto_install: installer::can_auto_install(),
         });
     };
     let available = comparison_version(&latest) > comparison_version(&current_version);
@@ -142,15 +144,21 @@ fn process(
         checked_at: 0,
         cached: false,
         warning: None,
+        auto_install: installer::can_auto_install(),
         url,
         message: if available {
-            "发现新版本，可下载完整安装包手动升级"
+            if installer::can_auto_install() {
+                "发现新版本，可以更新并重启"
+            } else {
+                "发现新版本，可下载完整安装包手动升级"
+            }
         } else {
             "当前已是最新版本或高于已发布版本"
         }
         .into(),
     })
 }
+pub mod installer;
 mod source;
 pub use source::UpdateState;
 fn valid_hash(value: &str) -> bool {
@@ -200,18 +208,30 @@ pub async fn download_update(
             .next()
             .filter(|name| !name.is_empty())
             .unwrap_or("onTime-installer");
-        let Some(target) = app
-            .dialog()
-            .file()
-            .set_title("保存 onTime 更新安装包")
-            .set_file_name(filename)
-            .blocking_save_file()
-        else {
-            return Ok(None);
+        let automatic = installer::can_auto_install();
+        let target = if automatic {
+            let directory = app
+                .path()
+                .app_cache_dir()
+                .map_err(|e| e.to_string())?
+                .join("updates")
+                .join(uuid::Uuid::new_v4().to_string());
+            fs::create_dir_all(&directory).map_err(|e| format!("无法创建更新缓存：{e}"))?;
+            directory.join(filename)
+        } else {
+            let Some(target) = app
+                .dialog()
+                .file()
+                .set_title("保存 onTime 更新安装包")
+                .set_file_name(filename)
+                .blocking_save_file()
+            else {
+                return Ok(None);
+            };
+            target
+                .into_path()
+                .map_err(|e| format!("保存位置无效：{e}"))?
         };
-        let target = target
-            .into_path()
-            .map_err(|e| format!("保存位置无效：{e}"))?;
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(180))
             .user_agent("onTime-update-download")
@@ -283,7 +303,11 @@ pub async fn download_update(
         if result.is_err() {
             let _ = fs::remove_file(&temporary);
         }
-        result.map(|()| Some(target.to_string_lossy().into_owned()))
+        result?;
+        if automatic {
+            installer::remember(&app, target.clone(), url, sha256)?;
+        }
+        Ok(Some(target.to_string_lossy().into_owned()))
     })
     .await
     .map_err(|e| e.to_string())?
