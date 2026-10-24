@@ -85,13 +85,13 @@ fn announce(app: &AppHandle, occurrences: &[Occurrence]) {
             format!("{names}，请打开 onTime 逐项处理。")
         }
     };
-    let result = app.notification().builder().title(title).body(body).show();
-    if let Err(e) = result {
+    let mode = crate::preferences::notification_mode(app);
+    if mode != "internal" && let Err(e) = app.notification().builder().title(title).body(body).show() {
         let message = format!("系统通知发送失败：{e}");
         log::warn!("{message}");
         let _ = app.emit("notification-error", message);
     }
-    show_alert(app);
+    if mode != "system" { show_alert(app); }
 }
 
 #[tauri::command]
@@ -290,6 +290,22 @@ pub fn get_history(
 ) -> Result<storage::HistoryPage, String> {
     let guard = root(&state)?;
     storage::history_page(guard.as_ref().unwrap(), filter)
+}
+#[tauri::command]
+pub fn delete_history(app: AppHandle, state: tauri::State<Engine>, ids: Vec<String>) -> Result<usize, String> {
+    if ids.is_empty() { return Ok(0); }
+    if ids.len() > 500 { return Err("一次最多删除 500 条历史记录".into()); }
+    let guard = root(&state)?;
+    let mut conn = storage::open(guard.as_ref().unwrap())?;
+    let tx = conn.transaction().map_err(error)?;
+    let mut deleted = 0;
+    for id in &ids {
+        deleted += tx.execute("DELETE FROM occurrences WHERE id=?1 AND status NOT IN ('ringing','snoozed')", [id]).map_err(error)?;
+    }
+    tx.commit().map_err(error)?;
+    drop(guard);
+    notify(&app);
+    Ok(deleted)
 }
 
 #[tauri::command]
@@ -839,7 +855,15 @@ pub fn preview_sound(
         path,
         volume,
         gradual: false,
+        tones: None,
     });
+    Ok(())
+}
+
+#[tauri::command]
+pub fn preview_builtin_sound(state: tauri::State<Engine>, frequencies: Vec<f32>, volume: f32) -> Result<(), String> {
+    if !(0.0..=1.0).contains(&volume) || frequencies.is_empty() || frequencies.len() > 8 || frequencies.iter().any(|f| !(200.0..=2000.0).contains(f)) { return Err("内置铃声参数无效".into()); }
+    state.audio.preview_tones(frequencies, volume);
     Ok(())
 }
 
@@ -1140,23 +1164,25 @@ pub fn reconcile(app: &AppHandle, state: &Engine, now: i64) -> Result<(), String
         .filter(|o| o.status == "ringing")
         .min_by_key(|o| (o.scheduled_at, o.alarm_id.as_str()))
     {
-        if visible_ring
+        if crate::preferences::notification_mode(app) != "system" && visible_ring
             && app
                 .get_webview_window("alert")
                 .is_none_or(|w| !w.is_visible().unwrap_or(false))
         {
             show_alert(app);
         }
-        if let Some(a) = updated.alarms.iter().find(|a| a.id == o.alarm_id) {
+        if crate::preferences::notification_mode(app) != "system" && let Some(a) = updated.alarms.iter().find(|a| a.id == o.alarm_id) {
             let sound = a
                 .sound
                 .as_ref()
                 .and_then(|s| storage::safe_sound(path, s).ok());
+            let builtin = sound.is_none();
             state.audio.play(Play {
                 key: o.id.clone(),
                 path: sound,
                 volume: a.volume,
                 gradual: a.gradual,
+                tones: if builtin { Some(crate::preferences::builtin_frequencies(&crate::preferences::builtin_sound(app))) } else { None },
             });
         }
     } else {

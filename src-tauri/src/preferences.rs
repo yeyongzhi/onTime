@@ -1,5 +1,32 @@
 use std::fs;
 use tauri::{Emitter, Manager};
+pub fn notification_mode(app: &tauri::AppHandle) -> String {
+    app.path().app_data_dir().ok().and_then(|dir| fs::read_to_string(dir.join("notification-mode.txt")).ok()).filter(|mode| ["internal", "system", "both"].contains(&mode.as_str())).unwrap_or_else(|| "both".into())
+}
+#[tauri::command]
+pub fn read_notification_mode(app: tauri::AppHandle) -> String { notification_mode(&app) }
+#[tauri::command]
+pub fn save_notification_mode(app: tauri::AppHandle, mode: String) -> Result<(), String> {
+    if !["internal", "system", "both"].contains(&mode.as_str()) { return Err("通知方式无效".into()); }
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::write(dir.join("notification-mode.txt"), mode).map_err(|e| e.to_string())
+}
+pub fn builtin_sound(app: &tauri::AppHandle) -> String {
+    app.path().app_data_dir().ok().and_then(|dir| fs::read_to_string(dir.join("builtin-sound.txt")).ok()).filter(|sound| ["gentle", "bright", "deep", "pulse"].contains(&sound.as_str())).unwrap_or_else(|| "gentle".into())
+}
+pub fn builtin_frequencies(sound: &str) -> Vec<f32> {
+    match sound { "bright" => vec![880.0, 1175.0, 880.0], "deep" => vec![440.0, 554.0], "pulse" => vec![740.0, 740.0, 988.0], _ => vec![660.0, 880.0] }
+}
+#[tauri::command]
+pub fn read_builtin_sound(app: tauri::AppHandle) -> String { builtin_sound(&app) }
+#[tauri::command]
+pub fn save_builtin_sound(app: tauri::AppHandle, sound: String) -> Result<(), String> {
+    if !["gentle", "bright", "deep", "pulse"].contains(&sound.as_str()) { return Err("内置铃声无效".into()); }
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::write(dir.join("builtin-sound.txt"), sound).map_err(|e| e.to_string())
+}
 
 #[tauri::command]
 pub fn read_appearance(app: tauri::AppHandle) -> Result<Option<serde_json::Value>, String> {

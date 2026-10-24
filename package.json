@@ -1,7 +1,7 @@
 {
   "name": "ontime",
   "private": true,
-  "version": "0.0.1-beta6",
+  "version": "0.0.1-beta7",
   "type": "module",
   "scripts": {
     "dev": "vite",

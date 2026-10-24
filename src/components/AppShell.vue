@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { RouterLink, RouterView, useRoute, onBeforeRouteUpdate } from 'vue-router'
-import { isTauri } from '@tauri-apps/api/core'
+import { invoke, isTauri } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { BellIcon, ListIcon, FolderIcon, TagIcon, HistoryIcon, SettingsIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, SunIcon, MoonIcon, MonitorIcon } from '@lucide/vue'
@@ -20,19 +20,19 @@ let updateTimer: ReturnType<typeof setInterval> | undefined
 const collapsed = ref(false)
 const closeNotice = ref(false)
 const trayHintKey = 'ontime-tray-close-explained-v1'
+const closePending = ref(false)
 let removeCloseRequest: UnlistenFn | undefined
 let disposed = false
 onMounted(async () => {
   if (!isTauri()) return
+  try { await invoke('plugin:global-shortcut|register', { shortcut: localStorage.getItem('ontime.startup-shortcut') || 'Ctrl+Shift+Space' }) }
+  catch (error) { console.warn('无法注册面板快捷键', error) }
   void updates.showInstallResult()
   void updates.checkUpdate(false)
   updateTimer = setInterval(() => { void updates.checkUpdate(false) }, 6 * 60 * 60 * 1000)
   const unsubscribe = await listen('main-close-request', async () => {
-    if (localStorage.getItem(trayHintKey) === 'true') {
-      await getCurrentWindow().hide()
-    } else {
-      closeNotice.value = true
-    }
+    closePending.value = true
+    closeNotice.value = true
   })
   if (disposed) unsubscribe()
   else removeCloseRequest = unsubscribe
@@ -41,11 +41,13 @@ onUnmounted(() => { disposed = true; removeCloseRequest?.(); if (updateTimer) cl
 function acknowledgeTrayBehavior() {
   localStorage.setItem(trayHintKey, 'true')
   closeNotice.value = false
+  closePending.value = false
 }
 async function hideToTray() {
   acknowledgeTrayBehavior()
   await getCurrentWindow().hide()
 }
+function keepWindowOpen() { closeNotice.value = false; closePending.value = false }
 const nav = [{ path: '/', name: '我的提醒', icon: BellIcon }, { path: '/reminders', name: '全部提醒', icon: ListIcon }, { path: '/history', name: '提醒历史', icon: HistoryIcon }, { path: '/groups', name: '分组管理', icon: FolderIcon }, { path: '/tags', name: '标签管理', icon: TagIcon }]
 function setMode(value: unknown) { if (value === 'light' || value === 'dark' || value === 'system') appearance.mode = value }
 const active = (path: string) => route.path === path || (path === '/reminders' && route.path.startsWith('/reminders/'))
@@ -72,7 +74,7 @@ const active = (path: string) => route.path === path || (path === '/reminders' &
       <div class="app-content">
         <ScrollArea class="min-h-0 flex-1"><RouterView /></ScrollArea>
       </div>
-      <Dialog v-model:open="closeNotice"><DialogContent><DialogHeader><DialogTitle>onTime 将继续在后台运行</DialogTitle><DialogDescription>关闭窗口会将 onTime 收到系统托盘，已启用的提醒会继续运行。要完全退出，请右键托盘图标并选择“退出（停止提醒）”。</DialogDescription></DialogHeader><DialogFooter><Button variant="secondary" @click="acknowledgeTrayBehavior">留在窗口</Button><Button @click="hideToTray">收到，最小化到托盘</Button></DialogFooter></DialogContent></Dialog>
+      <Dialog v-model:open="closeNotice" @update:open="open => { if (!open && closePending) keepWindowOpen() }"><DialogContent><DialogHeader><DialogTitle>onTime 将继续在后台运行</DialogTitle><DialogDescription>关闭窗口会将 onTime 收到系统托盘，已启用的提醒会继续运行。要完全退出，请右键托盘图标并选择“退出（停止提醒）”。</DialogDescription></DialogHeader><DialogFooter><Button variant="secondary" @click="keepWindowOpen">留在窗口</Button><Button @click="hideToTray">收到，最小化到托盘</Button></DialogFooter></DialogContent></Dialog>
     </div>
   </TooltipProvider>
 </template>

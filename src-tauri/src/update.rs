@@ -180,6 +180,10 @@ pub fn open_releases(app: AppHandle) -> Result<(), String> {
         })
 }
 #[tauri::command]
+pub fn open_changelog(app: AppHandle) -> Result<(), String> {
+    app.opener().open_url("https://github.com/yeyongzhi/onTime/blob/dev/docs/changelog.md", None::<&str>).map_err(|e| format!("无法打开更新日志：{e}"))
+}
+#[tauri::command]
 pub fn open_update_link(app: AppHandle, url: String) -> Result<(), String> {
     if !valid_download(&url) {
         return Err("只允许打开 onTime 官方仓库安装包链接".into());

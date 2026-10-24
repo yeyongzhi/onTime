@@ -25,10 +25,13 @@ const isGroup = computed(() => props.kind === 'groups')
 const label = computed(() => isGroup.value ? '分组' : '标签')
 const items = computed(() => store.snapshot?.[props.kind] ?? [])
 const query = ref('')
+const appliedQuery = ref('')
+function applyOrganizationQuery() { appliedQuery.value=query.value; page.value=1 }
+function resetOrganizationQuery() { query.value=''; applyOrganizationQuery() }
 const displayMode = computed({ get: () => appearance.displayMode, set: value => { appearance.displayMode = value as 'grid' | 'list' } })
-const filteredItems = computed(() => items.value.filter(item => item.name.toLocaleLowerCase().includes(query.value.trim().toLocaleLowerCase())))
+const filteredItems = computed(() => items.value.filter(item => item.name.toLocaleLowerCase().includes(appliedQuery.value.trim().toLocaleLowerCase())))
 function clearName() { query.value=''; document.getElementById('organization-search')?.focus() }
-watch(() => props.kind, () => { query.value = '' })
+watch(() => props.kind, () => { query.value = ''; appliedQuery.value='' })
 const editing = ref(false)
 const form = ref<Tag>({ id: '', name: '', color: '#7c6cf0' })
 const deletion = ref<Tag | null>(null)
@@ -50,15 +53,15 @@ const pageSize = 10
 const totalPages = computed(() => Math.max(1, Math.ceil(filteredItems.value.length / pageSize)))
 const paged = computed(() => filteredItems.value.slice((page.value - 1) * pageSize, page.value * pageSize))
 watch(totalPages, total => { page.value = Math.min(page.value, total) })
-watch([query, () => props.kind], () => { page.value = 1 })
+watch([appliedQuery, () => props.kind], () => { page.value = 1 })
 </script>
 <template>
   <main class="workspace-page organization-page">
-    <Card class="shrink-0"><CardHeader class="sr-only"><CardTitle>{{ label }}管理</CardTitle></CardHeader><CardContent class="flex flex-wrap items-center gap-3">
+    <Card class="shrink-0"><CardHeader class="sr-only"><CardTitle>{{ label }}管理</CardTitle></CardHeader><CardContent class="organization-toolbar-grid">
       <Field class="min-w-40 flex-1"><FieldLabel for="organization-search" class="sr-only">{{ label }}名称</FieldLabel><InputGroup><InputGroupInput id="organization-search" v-model="query" :placeholder="`搜索${label}名称…`" /><InputGroupAddon v-if="query" align="inline-end"><InputGroupButton size="icon-xs" aria-label="清空名称" @click="clearName"><XIcon /></InputGroupButton></InputGroupAddon></InputGroup></Field>
-      <Tabs v-model="displayMode"><TabsList :aria-label="`${label}显示方式`"><TabsTrigger value="grid"><LayoutGridIcon />网格</TabsTrigger><TabsTrigger value="list"><ListIcon />列表</TabsTrigger></TabsList></Tabs>
-      <Button :disabled="!store.snapshot || store.busy" @click="edit()"><PlusIcon data-icon="inline-start" />新建{{ label }}</Button>
+      <Button @click="applyOrganizationQuery">查询</Button><Button variant="secondary" @click="resetOrganizationQuery">重置</Button>
     </CardContent></Card>
+    <Card class="organization-action-card"><CardContent class="organization-action-row"><span class="reminder-total">共有 {{ items.length }} 条{{ label }}</span><Tabs v-model="displayMode"><TabsList :aria-label="`${label}显示方式`"><TabsTrigger value="grid"><LayoutGridIcon />网格</TabsTrigger><TabsTrigger value="list"><ListIcon />列表</TabsTrigger></TabsList></Tabs><Button :disabled="!store.snapshot || store.busy" @click="edit()"><PlusIcon data-icon="inline-start" />新建{{ label }}</Button></CardContent></Card>
     <Card class="organization-content"><ScrollArea class="min-h-0 flex-1"><CardContent>
     <Table v-if="filteredItems.length && displayMode === 'list'"><TableHeader><TableRow><TableHead>序号</TableHead><TableHead>{{ label }}名称</TableHead><TableHead>提醒数量</TableHead><TableHead>操作</TableHead></TableRow></TableHeader><TableBody><TableRow v-for="(item, index) in paged" :key="item.id"><TableCell class="tabular-nums">{{ (page - 1) * pageSize + index + 1 }}</TableCell><TableCell><div class="flex items-center gap-2"><span class="size-3 shrink-0 rounded-full" :style="{ backgroundColor: item.color }" /><span class="font-medium">{{ item.name }}</span></div></TableCell><TableCell>{{ count(item.id) }} 个提醒</TableCell><TableCell><div class="flex justify-start gap-2"><Button variant="secondary" size="sm" @click="view(item.id)">查看提醒</Button><Button variant="secondary" size="sm" :disabled="store.busy" @click="edit(item)">编辑</Button><Button variant="destructive" size="sm" :disabled="store.busy" @click="deletion = item">删除</Button></div></TableCell></TableRow></TableBody></Table>
     <div v-else-if="filteredItems.length" class="grid gap-3 organization-grid" :data-display="displayMode"><Card v-for="item in paged" :key="item.id" size="sm" class="data-[size=sm]:gap-1"><CardHeader><CardTitle class="group-data-[size=sm]/card:text-base font-bold">{{ item.name }}</CardTitle><CardDescription>包含 {{ count(item.id) }} 个提醒</CardDescription></CardHeader><CardFooter class="flex flex-wrap items-center justify-end gap-1 bg-transparent px-3 pb-3 pt-0 border-t-0">

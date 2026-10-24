@@ -195,18 +195,22 @@ html, body, #app { height: 100%; overflow: hidden; }
 .navigation-button { width: 100%; min-height: 2.75rem; height: auto; justify-content: flex-start; gap: 0.65rem; padding: 0.65rem 0.75rem; white-space: normal; text-align: left; }
 .navigation-button[data-active="true"] { background: var(--theme-soft); color: var(--theme-ink); }
 .app-layout[data-collapsed="true"] .app-sidebar .navigation-button { justify-content: center; padding-inline: 0; }
-.settings-nav { position: static; flex: 0 0 180px; min-height: 0; }
+.settings-nav { position: static; flex: 0 0 auto; width: 100%; min-height: 0; }
 .settings-nav .settings-category-button, .settings-nav .settings-category-button[data-active="true"] { font-weight: 400; }
 .settings-panel-heading { font-size: 1.25rem; line-height: 1.75rem; font-weight: 700; letter-spacing: -0.015em; }
-.settings-menu-scroll { height: 100%; min-height: 0; }
-.settings-layout { display: flex; gap: 16px; padding: 16px; container-type: inline-size; height: 100dvh; min-height: 0; box-sizing: border-box; overflow: hidden; align-items: stretch; width: 100%; max-width: none; margin: 0; }
-.settings-nav, .settings-content { height: 100%; min-height: 0; }
-.settings-nav-card { height: 100%; min-height: 0; }
-.settings-nav-content { display: flex; flex: 1; min-height: 0; flex-direction: column; }
+.settings-menu-scroll { width: 100%; min-width: 0; }
+.settings-menu-items { display: flex; flex-wrap: wrap; gap: 4px; }
+.settings-nav-toolbar { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.settings-nav-toolbar .settings-menu-scroll { flex: 1; }
+.settings-nav-description { color: var(--muted-foreground); font-size: .875rem; line-height: 1.4; }
+.settings-reset-button { flex-shrink: 0; }
+.settings-layout { display: flex; flex-direction: column; gap: 12px; padding: 16px; container-type: inline-size; height: 100dvh; min-height: 0; box-sizing: border-box; overflow: hidden; align-items: stretch; width: 100%; max-width: none; margin: 0; }
+.settings-nav-card { height: auto; }
+.settings-nav-content { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.settings-category-button { width: auto; min-height: 2.5rem; }
 .settings-content { container-type: inline-size; display: flex; flex: 1; min-width: 0; min-height: 0; }
 .settings-panel { display: flex; flex: 1; height: 100%; min-height: 0; flex-direction: column; }
 .settings-panel-scroll { height: 0; flex: 1; min-height: 0; }
-@media (max-width: 1000px) { .settings-layout { gap: 16px; } .settings-nav { flex-basis: 150px; } }
 @media (prefers-reduced-motion: reduce) { .app-sidebar { transition: none; } }
 
 .sidebar-actions { display: flex; align-items: center; justify-content: center; gap: 2px; padding: 8px; flex-shrink: 0; }
@@ -343,3 +347,47 @@ html, body, #app { height: 100%; overflow: hidden; }
 .reminder-grid > .reminder-card > [data-slot="card-content"] { flex: 1; min-width: 0; }
 .reminder-grid > .reminder-card > [data-slot="card-footer"] { margin-top: auto; flex-shrink: 0; }
 .reminder-schedule-cell { width: 16rem; min-width: 14rem; white-space: normal; }
+.reminder-content-cell { min-width: 12rem; max-width: 22rem; white-space: normal; }
+.reminder-content-text { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow-wrap: anywhere; }
+.reminder-schedule-cell [data-slot=popover-trigger] { white-space: nowrap; }
+.workspace-page { container-type: inline-size; }
+.reminder-page { gap: 8px; }
+.reminder-toolbar-shell { display: flex; flex-direction: column; align-items: stretch; gap: 6px; min-width: 0; }
+.reminder-filter-card { flex: 1 1 auto; min-width: 0; }
+.reminder-action-card { flex: 0 0 auto; width: 100%; padding-block: 0; }
+.reminder-action-card [data-slot=card-content] { padding: 6px 12px; }
+.reminder-toolbar-primary { display: flex; align-items: flex-start; gap: 12px; }
+.reminder-toolbar-query { flex: 1; display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); align-items: center; gap: 8px; min-width: 0; }
+.reminder-toolbar-query > * { min-width: 0; width: 100%; }
+.reminder-toolbar-query [data-slot=select-trigger] { width: 100%; }
+.reminder-toolbar-filters { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); align-items: center; gap: 8px; }
+.reminder-date-range { display: grid; grid-column: span 2; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; min-width: 0; }
+.reminder-date-range [data-slot=popover-trigger] { width: 100%; }
+.reminder-toolbar-filters > [data-slot=select], .reminder-toolbar-filters > [data-slot=popover] { width: 100%; }
+.reminder-toolbar-filters [data-slot=select-trigger], .reminder-toolbar-filters [data-slot=popover-trigger] { width: 100%; }
+.history-page { gap: 8px; }
+.history-page > [data-slot=card]:first-child { padding-block: 8px; }
+.history-page > [data-slot=card]:first-child [data-slot=card-content] { gap: 8px; padding-block: 6px; }
+.history-filter-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); align-items: center; gap: 8px; }
+.history-filter-grid > * { width: 100%; min-width: 0; }
+.history-filter-grid [data-slot=select-trigger], .history-filter-grid [data-slot=popover-trigger] { width: 100%; }
+.history-filter-actions { display: flex; width: 100%; gap: 8px; }
+.history-filter-actions > * { flex: 1 1 0; min-width: 0; }
+.history-action-card { padding-block: 0; }
+.history-action-row { display: flex; align-items: center; gap: 8px; padding-block: 6px; }
+.history-action-buttons { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+@container (max-width: 480px) { .history-filter-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .history-filter-actions { grid-column: 1 / -1; } }
+.reminder-toolbar-filters > *, .history-filter-grid > * { min-width: 0; }
+.reminder-toolbar-filters > * { width: 100%; }
+.reminder-filter-actions { display: flex; grid-column: 4; gap: 8px; width: 100%; min-width: 0; }
+.reminder-filter-actions > * { flex: 1 1 0; min-width: 0; }
+.reminder-toolbar-actions { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.reminder-total { color: var(--muted-foreground); font-size: .875rem; }
+.reminder-toolbar-actions > [data-slot=tabs] { margin-left: auto; }
+.organization-toolbar-grid { display: grid; grid-template-columns: minmax(180px,1fr) auto auto; align-items: center; gap: 12px; }
+.organization-action-card { padding-block: 0; }
+.organization-action-row { display: flex; align-items: center; gap: 8px; padding-block: 6px; }
+.organization-action-row > [data-slot=tabs] { margin-left: auto; }
+@container (max-width: 620px) { .reminder-toolbar-primary { flex-direction: column; } .reminder-toolbar-query { width: 100%; } .organization-toolbar-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .organization-toolbar-grid > :first-child { grid-column: 1 / -1; } }
+@container (max-width: 620px) { .reminder-toolbar-filters { grid-template-columns: repeat(2,minmax(0,1fr)); } .reminder-filter-actions { grid-column: 1 / -1; } }
+@container (max-width: 420px) { .reminder-toolbar-query, .organization-toolbar-grid { grid-template-columns: minmax(0,1fr); } .reminder-toolbar-query > :nth-child(2), .organization-toolbar-grid > :first-child { grid-column: auto; grid-row: auto; } }

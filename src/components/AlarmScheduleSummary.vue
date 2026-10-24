@@ -42,6 +42,7 @@ const row = ref<HTMLElement>(), measurement = ref<HTMLElement>()
 const { width } = useElementSize(row)
 const { width: badgeWidth } = useElementSize(measurement)
 const visibleCount = computed(() => {
+  if (props.compact) return 0
   const unit = badgeWidth.value || 48, gap = 6
   const fit = Math.floor((width.value + gap) / (unit + gap))
   if (times.value.length <= Math.min(3, fit)) return times.value.length

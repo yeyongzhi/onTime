@@ -25,6 +25,11 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(|app, _shortcut, event| {
+            if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                if let Some(w) = app.get_webview_window("main") { let _ = w.unminimize(); let _ = w.show(); let _ = w.set_focus(); }
+            }
+        }).build())
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_autostart::Builder::new()
@@ -235,12 +240,17 @@ pub fn run() {
             engine::delete_alarms,
             engine::matching_alarm_dates,
             engine::get_history,
+            engine::delete_history,
             engine::get_history_facets,
             engine::get_home_summary,
             engine::check_alarm_conflicts,
             engine::preview_next_runs,
             engine::test_notification,
             preferences::read_appearance,
+            preferences::read_notification_mode,
+            preferences::save_notification_mode,
+            preferences::read_builtin_sound,
+            preferences::save_builtin_sound,
             preferences::save_appearance,
             engine::choose_data_root,
             engine::open_data_root,
@@ -254,12 +264,14 @@ pub fn run() {
             engine::settle_occurrence,
             engine::import_sound,
             engine::preview_sound,
+            engine::preview_builtin_sound,
             backup::export_backup,
             backup::import_backup,
             update::check_update,
             update::installer::install_downloaded_update,
             update::installer::take_update_result,
             update::open_releases,
+            update::open_changelog,
             update::reveal_installer,
             update::download_update,
             update::open_update_link

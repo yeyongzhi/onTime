@@ -15,6 +15,7 @@ pub struct Play {
     pub path: Option<PathBuf>,
     pub volume: f32,
     pub gradual: bool,
+    pub tones: Option<Vec<f32>>,
 }
 impl AudioHandle {
     pub fn start(app: AppHandle) -> Self {
@@ -76,6 +77,14 @@ impl AudioHandle {
                                             );
                                         }
                                     }
+                                }
+                                if let Some(tones) = &play.tones {
+                                    let samples = tones.iter().flat_map(|frequency| {
+                                        rodio::source::SineWave::new(*frequency).take_duration(Duration::from_millis(180)).amplify(0.18).collect::<Vec<f32>>().into_iter().chain(std::iter::repeat_n(0.0, 4800))
+                                    }).collect::<Vec<f32>>();
+                                    let source = rodio::buffer::SamplesBuffer::new(std::num::NonZeroU16::new(1).unwrap(), std::num::NonZeroU32::new(48000).unwrap(), samples);
+                                    p.append(source.repeat_infinite());
+                                    custom = true;
                                 }
                                 if !custom {
                                     // Soft two-note chime, silence between phrases.
@@ -148,12 +157,16 @@ impl AudioHandle {
     pub fn play(&self, play: Play) {
         let _ = self.0.send(Some(play));
     }
+    pub fn preview_tones(&self, frequencies: Vec<f32>, volume: f32) {
+        self.play(Play { key: format!("preview-{}", uuid::Uuid::new_v4()), path: None, volume, gradual: false, tones: Some(frequencies) });
+    }
     pub fn stop_alert(&self) {
         self.play(Play {
             key: "#stop-alert".into(),
             path: None,
             volume: 0.0,
             gradual: false,
+            tones: None,
         });
     }
     pub fn stop(&self) {
