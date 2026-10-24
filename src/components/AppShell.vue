@@ -25,7 +25,12 @@ let removeCloseRequest: UnlistenFn | undefined
 let disposed = false
 onMounted(async () => {
   if (!isTauri()) return
-  try { await invoke('plugin:global-shortcut|register', { shortcut: localStorage.getItem('ontime.startup-shortcut') || 'Ctrl+Shift+Space' }) }
+  try {
+    const shortcut = localStorage.getItem('ontime.startup-shortcut') || 'Ctrl+Shift+Space'
+    if (!await invoke<boolean>('plugin:global-shortcut|is_registered', { shortcut })) {
+      await invoke('plugin:global-shortcut|register', { shortcuts: shortcut })
+    }
+  }
   catch (error) { console.warn('无法注册面板快捷键', error) }
   void updates.showInstallResult()
   void updates.checkUpdate(false)

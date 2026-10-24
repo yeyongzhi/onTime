@@ -181,7 +181,7 @@ pub fn open_releases(app: AppHandle) -> Result<(), String> {
 }
 #[tauri::command]
 pub fn open_changelog(app: AppHandle) -> Result<(), String> {
-    app.opener().open_url("https://github.com/yeyongzhi/onTime/blob/dev/docs/changelog.md", None::<&str>).map_err(|e| format!("无法打开更新日志：{e}"))
+    app.opener().open_url("https://yeyongzhi.github.io/onTime/changelog.html", None::<&str>).map_err(|e| format!("无法打开更新日志：{e}"))
 }
 #[tauri::command]
 pub fn open_update_link(app: AppHandle, url: String) -> Result<(), String> {

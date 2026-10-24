@@ -30,6 +30,14 @@ impl AudioHandle {
             loop {
                 match rx.recv_timeout(Duration::from_millis(100)) {
                     Ok(Some(play)) => {
+                        if play.key == "#stop-preview" {
+                            if active.as_ref().is_some_and(|p| p.key.starts_with("preview-")) {
+                                player.take();
+                                output.take();
+                                active = None;
+                            }
+                            continue;
+                        }
                         if play.key == "#stop-alert" {
                             if !active
                                 .as_ref()
@@ -163,6 +171,15 @@ impl AudioHandle {
     pub fn stop_alert(&self) {
         self.play(Play {
             key: "#stop-alert".into(),
+            path: None,
+            volume: 0.0,
+            gradual: false,
+            tones: None,
+        });
+    }
+    pub fn stop_preview(&self) {
+        self.play(Play {
+            key: "#stop-preview".into(),
             path: None,
             volume: 0.0,
             gradual: false,

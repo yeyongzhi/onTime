@@ -13,5 +13,6 @@ export default createRouter({
       { path: 'settings', component: () => import('@/views/SettingsView.vue') },
     ] },
     { path: '/alert', component: () => import('@/views/AlertView.vue') },
+    { path: '/deferred-summary', component: () => import('@/views/DeferredSummaryView.vue') },
   ],
 })

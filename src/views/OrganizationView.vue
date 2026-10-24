@@ -58,8 +58,8 @@ watch([appliedQuery, () => props.kind], () => { page.value = 1 })
 <template>
   <main class="workspace-page organization-page">
     <Card class="shrink-0"><CardHeader class="sr-only"><CardTitle>{{ label }}管理</CardTitle></CardHeader><CardContent class="organization-toolbar-grid">
-      <Field class="min-w-40 flex-1"><FieldLabel for="organization-search" class="sr-only">{{ label }}名称</FieldLabel><InputGroup><InputGroupInput id="organization-search" v-model="query" :placeholder="`搜索${label}名称…`" /><InputGroupAddon v-if="query" align="inline-end"><InputGroupButton size="icon-xs" aria-label="清空名称" @click="clearName"><XIcon /></InputGroupButton></InputGroupAddon></InputGroup></Field>
-      <Button @click="applyOrganizationQuery">查询</Button><Button variant="secondary" @click="resetOrganizationQuery">重置</Button>
+      <Field class="min-w-0"><FieldLabel for="organization-search" class="sr-only">{{ label }}名称</FieldLabel><InputGroup><InputGroupInput id="organization-search" v-model="query" :placeholder="`搜索${label}名称…`" /><InputGroupAddon v-if="query" align="inline-end"><InputGroupButton size="icon-xs" aria-label="清空名称" @click="clearName"><XIcon /></InputGroupButton></InputGroupAddon></InputGroup></Field>
+      <div class="organization-filter-actions"><Button @click="applyOrganizationQuery">查询</Button><Button variant="secondary" @click="resetOrganizationQuery">重置</Button></div>
     </CardContent></Card>
     <Card class="organization-action-card"><CardContent class="organization-action-row"><span class="reminder-total">共有 {{ items.length }} 条{{ label }}</span><Tabs v-model="displayMode"><TabsList :aria-label="`${label}显示方式`"><TabsTrigger value="grid"><LayoutGridIcon />网格</TabsTrigger><TabsTrigger value="list"><ListIcon />列表</TabsTrigger></TabsList></Tabs><Button :disabled="!store.snapshot || store.busy" @click="edit()"><PlusIcon data-icon="inline-start" />新建{{ label }}</Button></CardContent></Card>
     <Card class="organization-content"><ScrollArea class="min-h-0 flex-1"><CardContent>

@@ -17,7 +17,7 @@ export interface Occurrence {
 export interface Calendar { year: number; source: string; fetchedAt: number; dates: Record<string, boolean> }
 export interface Snapshot { dataRoot: string; alarms: Alarm[]; tags: Tag[]; groups: Tag[]; occurrences: Occurrence[]; calendars: Calendar[]; nextRuns: Record<string, number> }
 export const repeatLabels: Record<Alarm['repeat'], string> = { once: '单次', daily: '每天', custom: '每周', monthly: '每月', quarterly: '每季度', yearly: '每年', workdays: '工作日', weekends: '周末' }
-export const statusLabels: Record<string, string> = { ringing: '响铃中', snoozed: '贪睡中', dismissed: '已停止', auto_stopped: '自动停止', skipped_expired: '过期未补响', cancelled: '已取消' }
+export const statusLabels: Record<string, string> = { ringing: '响铃中', snoozed: '贪睡中', deferred: '待解锁汇总', dismissed: '已停止', auto_stopped: '自动停止', skipped_expired: '过期未补响', cancelled: '已取消' }
 export function dateLabel(seconds: number) { return new Date(seconds * 1000).toLocaleString('zh-CN', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) }
 export function newAlarm(): Alarm {
   const date = new Date(); date.setMinutes(date.getMinutes() + 5)

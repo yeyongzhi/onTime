@@ -1,6 +1,6 @@
 [package]
 name = "ontime"
-version = "0.0.1-beta7"
+version = "0.0.1-beta8"
 description = "onTime cross-platform local alarm clock"
 authors = ["yeyongzhi"]
 license = ""
@@ -39,3 +39,6 @@ reqwest = { version = "0.13.5", default-features = false, features = ["blocking"
 semver = "1"
 
 sha2 = "0.10.9"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_Power", "Win32_System_RemoteDesktop", "Win32_System_SystemServices", "Win32_System_StationsAndDesktops", "Win32_UI_WindowsAndMessaging"] }

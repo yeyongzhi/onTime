@@ -12,6 +12,7 @@ export const useUpdatesStore = defineStore('updates', () => {
   const update = ref<UpdateInfo | null>(null)
   const checkingUpdate = ref(false)
   const updateError = ref('')
+  const installResultMessage = ref('')
   const updateProgress = ref<number | null>(null)
   const downloadingUpdate = ref(false)
   const downloadedInstaller = ref('')
@@ -48,7 +49,7 @@ export const useUpdatesStore = defineStore('updates', () => {
   async function installUpdate() {
     if (!downloadedInstaller.value || installingUpdate.value || preparingInstall) return
     if (alarms.busy) { updateError.value = '请等待当前数据操作完成，再点击安装并重启。'; return }
-    preparingInstall = true; updateError.value = ''
+    preparingInstall = true; updateError.value = ''; installResultMessage.value = ''
     try {
       const failure = await router.push('/settings')
       if (isNavigationFailure(failure, NavigationFailureType.aborted | NavigationFailureType.cancelled)) {
@@ -63,8 +64,8 @@ export const useUpdatesStore = defineStore('updates', () => {
   async function showInstallResult() {
     try {
       const result = await invoke<{ success: boolean; message: string } | null>('take_update_result')
-      if (result) { if (result.success) toast.success(result.message); else { updateError.value = result.message; toast.error(result.message) } }
+      if (result) { if (result.success) toast.success(result.message); else { installResultMessage.value = result.message; toast.error(result.message) } }
     } catch { /* A missing receipt must not interrupt reminders or startup. */ }
   }
-  return { update, checkingUpdate, updateError, updateProgress, downloadingUpdate, downloadedInstaller, checkUpdate, downloadUpdate, openReleases, installingUpdate, installUpdate, showInstallResult }
+  return { update, checkingUpdate, updateError, installResultMessage, updateProgress, downloadingUpdate, downloadedInstaller, checkUpdate, downloadUpdate, openReleases, installingUpdate, installUpdate, showInstallResult }
 })

@@ -1,5 +1,18 @@
 use std::fs;
 use tauri::{Emitter, Manager};
+pub fn delay_when_inactive(app: &tauri::AppHandle) -> bool {
+    app.path().app_data_dir().ok()
+        .and_then(|dir| fs::read_to_string(dir.join("delay-when-inactive.txt")).ok())
+        .is_none_or(|value| value.trim() != "false")
+}
+#[tauri::command]
+pub fn read_delay_when_inactive(app: tauri::AppHandle) -> bool { delay_when_inactive(&app) }
+#[tauri::command]
+pub fn save_delay_when_inactive(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::write(dir.join("delay-when-inactive.txt"), enabled.to_string()).map_err(|e| e.to_string())
+}
 pub fn notification_mode(app: &tauri::AppHandle) -> String {
     app.path().app_data_dir().ok().and_then(|dir| fs::read_to_string(dir.join("notification-mode.txt")).ok()).filter(|mode| ["internal", "system", "both"].contains(&mode.as_str())).unwrap_or_else(|| "both".into())
 }

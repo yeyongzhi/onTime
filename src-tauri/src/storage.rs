@@ -346,7 +346,7 @@ pub fn snapshot_from(conn: &Connection, root: &Path, full: bool) -> Result<Snaps
             if full {
                 "SELECT json FROM occurrences ORDER BY scheduled_at DESC"
             } else {
-                "SELECT json FROM occurrences WHERE id IN (SELECT id FROM occurrences ORDER BY scheduled_at DESC LIMIT 500) OR json_extract(json, '$.status') IN ('ringing','snoozed') ORDER BY scheduled_at DESC"
+                "SELECT json FROM occurrences WHERE id IN (SELECT id FROM occurrences ORDER BY scheduled_at DESC LIMIT 500) OR json_extract(json, '$.status') IN ('ringing','snoozed','deferred') ORDER BY scheduled_at DESC"
             },
         )?,
         calendars: read_json(conn, "SELECT json FROM calendars ORDER BY year DESC")?,

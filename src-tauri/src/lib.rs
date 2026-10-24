@@ -6,6 +6,7 @@ mod engine;
 mod logging;
 mod maintenance;
 mod preferences;
+mod screen_state;
 mod storage;
 mod update;
 use std::{fs, path::PathBuf, sync::Mutex, time::Duration};
@@ -79,6 +80,7 @@ pub fn run() {
                 }
             };
             logging::install(root.as_deref());
+            screen_state::start();
             app.manage(update::UpdateState::default());
             app.manage(update::installer::InstallState::default());
             app.manage(engine::Engine {
@@ -141,8 +143,11 @@ pub fn run() {
                 let mut last_backup_attempt = 0_i64;
                 let mut tracker = clock::ClockTracker::default();
                 let mut pending = clock::ClockChange::default();
+                let mut last_tick: Option<i64> = None;
                 loop {
                     let wall = chrono::Utc::now();
+                    let resumed = last_tick.is_none_or(|previous| wall.timestamp() - previous > 3);
+                    last_tick = Some(wall.timestamp());
                     if let Some(uptime) = clock::uptime_ms() {
                         pending.merge(tracker.observe(
                             wall.timestamp_millis(),
@@ -186,6 +191,7 @@ pub fn run() {
                             &handle,
                             &handle.state::<engine::Engine>(),
                             wall.timestamp(),
+                            resumed,
                         )
                     });
                     if let Err(e) = result {
@@ -223,6 +229,8 @@ pub fn run() {
                 api.prevent_close();
                 if window.label() == "alert" {
                     let _ = window.emit("close-alert-request", ());
+                } else if window.label() == "deferred-summary" {
+                    let _ = window.emit("close-deferred-summary-request", ());
                 } else {
                     if window.emit("main-close-request", ()).is_err() {
                         let _ = window.hide();
@@ -232,6 +240,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             engine::get_snapshot,
+            engine::get_deferred_reminders,
+            engine::acknowledge_deferred_reminders,
             maintenance::read_retention,
             maintenance::save_retention,
             maintenance::cleanup_data,
@@ -249,6 +259,8 @@ pub fn run() {
             preferences::read_appearance,
             preferences::read_notification_mode,
             preferences::save_notification_mode,
+            preferences::read_delay_when_inactive,
+            preferences::save_delay_when_inactive,
             preferences::read_builtin_sound,
             preferences::save_builtin_sound,
             preferences::save_appearance,

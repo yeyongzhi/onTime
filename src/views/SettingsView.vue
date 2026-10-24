@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Badge } from '@/components/ui/badge'
 import BrandLogo from '@/components/BrandLogo.vue'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import { storeToRefs } from 'pinia'
 import { useUpdatesStore } from '@/stores/updates'
@@ -56,10 +56,22 @@ async function cleanupData() {
 }
 const auto = ref(false)
 const notificationMode = ref('both')
+const delayWhenInactive = ref(true)
+const supportsInactiveDelay = navigator.userAgent.includes('Windows')
+async function changeDelayWhenInactive(value: boolean) {
+  try { await invoke('save_delay_when_inactive', { enabled: value }); delayWhenInactive.value = value; toast.success('息屏/锁屏提醒设置已保存') }
+  catch (error) { toast.error(String(error)) }
+}
 async function changeNotificationMode(value: unknown) { if (typeof value !== 'string') return; try { await invoke('save_notification_mode', { mode: value }); notificationMode.value = value; toast.success('通知方式已保存') } catch (e) { toast.error(String(e)) } }
 const builtInSound = ref('gentle')
 async function changeBuiltInSound(value: unknown) { if (typeof value !== 'string') return; try { await invoke('save_builtin_sound', { sound: value }); builtInSound.value = value; toast.success('默认提醒铃声已保存') } catch (e) { toast.error(String(e)) } }
 const builtInSounds = [{ id: 'gentle', name: '轻铃' }, { id: 'bright', name: '清脆双音' }, { id: 'deep', name: '沉稳提示' }, { id: 'pulse', name: '三连提示' }]
+const previewingSound = ref<string | null>(null)
+let previewTimer: ReturnType<typeof setTimeout> | undefined
+onUnmounted(() => {
+  if (previewTimer) clearTimeout(previewTimer)
+  if (previewingSound.value && isTauri()) void invoke('preview_sound', { sound: null, volume: 0, stop: true }).catch(() => {})
+})
 watch(() => store.snapshot?.dataRoot, () => { void loadRetention() }, { immediate: true })
 const changing = ref(false)
 const defaultShortcut = 'Ctrl+Shift+Space'
@@ -82,8 +94,8 @@ async function saveStartupShortcut() {
     const candidate = normalizeShortcut(shortcutDraft.value)
     const conflict = await invoke<boolean>('plugin:global-shortcut|is_registered', { shortcut: candidate })
     if (conflict && candidate !== startupShortcut.value) throw new Error('此快捷键已注册，请换一个组合键。')
-    await invoke('plugin:global-shortcut|register', { shortcut: candidate })
-    try { if (candidate !== startupShortcut.value) await invoke('plugin:global-shortcut|unregister', { shortcut: startupShortcut.value }) } catch { /* old key may not be registered yet */ }
+    if (!conflict) await invoke('plugin:global-shortcut|register', { shortcuts: candidate })
+    try { if (candidate !== startupShortcut.value) await invoke('plugin:global-shortcut|unregister', { shortcuts: startupShortcut.value }) } catch { /* old key may not be registered yet */ }
     startupShortcut.value = candidate; shortcutDraft.value = candidate; localStorage.setItem('ontime.startup-shortcut', candidate); toast.success('启动快捷键已更新')
   } catch (error) { shortcutError.value = `快捷键注册失败，可能已被其他程序占用：${String(error)}`; toast.error(shortcutError.value) }
   finally { shortcutBusy.value = false }
@@ -108,16 +120,17 @@ function preference(value: unknown, key: 'fontSize' | 'radius' | 'sidebarWidth')
   if (Number.isFinite(numeric) && numeric >= bounds[0]! && numeric <= bounds[1]!) appearance[key] = numeric
 }
 const updates = useUpdatesStore()
-const { update, checkingUpdate, updateError, updateProgress, downloadingUpdate, downloadedInstaller, installingUpdate } = storeToRefs(updates)
+const { update, checkingUpdate, updateError, installResultMessage, updateProgress, downloadingUpdate, downloadedInstaller, installingUpdate } = storeToRefs(updates)
 const { checkUpdate, downloadUpdate, installUpdate } = updates
 onMounted(async () => {
   if (isTauri()) { try { notificationMode.value = await invoke<string>('read_notification_mode') } catch (e) { toast.error(String(e)) } }
+  if (isTauri()) { try { delayWhenInactive.value = await invoke<boolean>('read_delay_when_inactive') } catch (e) { toast.error(String(e)) } }
   if (isTauri()) { try { builtInSound.value = await invoke<string>('read_builtin_sound') } catch (e) { toast.error(String(e)) } }
   try { auto.value = await isEnabled() } catch { /* Native settings are unavailable in browser previews. */ }
   try { version.value = await getVersion() } catch { /* Keep the package version in browser previews. */ }
   if (isTauri()) {
-    try { if (!await invoke<boolean>('plugin:global-shortcut|is_registered', { shortcut: startupShortcut.value })) await invoke('plugin:global-shortcut|register', { shortcut: startupShortcut.value }) }
-    catch { startupShortcut.value = defaultShortcut; shortcutDraft.value = defaultShortcut; try { await invoke('plugin:global-shortcut|register', { shortcut: defaultShortcut }) } catch (error) { shortcutError.value = `默认快捷键 Ctrl+Shift+Space 注册失败：${String(error)}` } }
+    try { if (!await invoke<boolean>('plugin:global-shortcut|is_registered', { shortcut: startupShortcut.value })) await invoke('plugin:global-shortcut|register', { shortcuts: startupShortcut.value }) }
+    catch { startupShortcut.value = defaultShortcut; shortcutDraft.value = defaultShortcut; try { if (!await invoke<boolean>('plugin:global-shortcut|is_registered', { shortcut: defaultShortcut })) await invoke('plugin:global-shortcut|register', { shortcuts: defaultShortcut }) } catch (error) { shortcutError.value = `默认快捷键 Ctrl+Shift+Space 注册失败：${String(error)}` } }
   }
   if (!isTauri()) notificationPermission.value = 'unsupported'
   else await checkNotificationPermission()
@@ -139,9 +152,21 @@ async function testNotification() {
   try { await invoke('test_notification'); store.notificationError = ''; toast.success('测试通知已发送，请查看系统通知中心') }
   catch (e) { store.notificationError = String(e); toast.error(String(e)) }
 }
-async function testAudio() {
+async function stopAudioPreview() {
+  if (previewTimer) clearTimeout(previewTimer)
+  previewTimer = undefined
+  try { await invoke('preview_sound', { sound: null, volume: 0, stop: true }); previewingSound.value = null }
+  catch (e) { store.audioError = String(e); toast.error(String(e)) }
+}
+async function testAudio(soundId: string) {
   const patterns: Record<string, number[]> = { gentle: [660,880], bright: [880,1175,880], deep: [440,554], pulse: [740,740,988] }
-  try { await invoke('preview_builtin_sound', { frequencies: patterns[builtInSound.value], volume: 0.55 }); window.setTimeout(() => { void invoke('preview_sound', { sound: null, volume: 0, stop: true }).catch(() => {}) }, 3000); toast.success('正在试听，3 秒后自动停止'); }
+  if (previewTimer) clearTimeout(previewTimer)
+  try {
+    await invoke('preview_builtin_sound', { frequencies: patterns[soundId], volume: 0.55 })
+    previewingSound.value = soundId
+    previewTimer = window.setTimeout(() => { void stopAudioPreview() }, 3000)
+    toast.success('正在试听，3 秒后自动停止')
+  }
   catch (e) { store.audioError = String(e); toast.error(String(e)) }
 }
 function setDisplayMode(value: unknown) { if (value === 'grid' || value === 'list') appearance.displayMode = value }
@@ -180,12 +205,13 @@ async function openDataRoot() { try { await invoke('open_data_root') } catch(e) 
       <Card v-else-if="section === 'general'" class="settings-panel"><ScrollArea class="settings-panel-scroll"><CardContent><FieldGroup>
         <Field class="settings-row"><div class="settings-row-copy"><FieldLabel for="startup-shortcut">全局快捷键打开面板</FieldLabel><FieldDescription>按下组合键设置，保存时由系统注册；如果与其他程序冲突，系统会拒绝并提示，可更换组合键。当前：{{ startupShortcut }}</FieldDescription><FieldDescription v-if="shortcutError" class="text-destructive" role="alert">{{ shortcutError }}</FieldDescription></div><div class="settings-row-control flex gap-2"><Input id="startup-shortcut" class="w-44" :model-value="shortcutDraft" readonly placeholder="点击后按下快捷键" @keydown="captureShortcut" /><Button variant="secondary" :disabled="shortcutBusy || shortcutDraft === startupShortcut" @click="saveStartupShortcut">{{ shortcutBusy ? '注册中…' : '保存' }}</Button></div></Field>
         <Field class="settings-row"><div class="settings-row-copy"><FieldLabel for="autostart">登录时启动 onTime</FieldLabel><FieldDescription>开启后，登录系统时 onTime 会收至托盘并继续监控；手动退出应用后提醒会停止。</FieldDescription></div><div class="settings-row-control"><Switch id="autostart" :model-value="auto" :disabled="changing" @update:model-value="changeAuto" /></div></Field>
-        <Field class="settings-row"><div class="settings-row-copy"><FieldLabel>后台提醒状态</FieldLabel><FieldDescription role="status">{{ reminderRuntimeStatus }}</FieldDescription><FieldDescription>应用需要保持在系统托盘运行；系统睡眠期间不会唤醒电脑。恢复运行后，30 分钟内的漏响会补响，更早的提醒会发送摘要并记录在“我的提醒”页。</FieldDescription></div></Field>
+        <Field v-if="supportsInactiveDelay" class="settings-row"><div class="settings-row-copy"><FieldLabel for="delay-when-inactive">息屏/锁屏时延迟提醒</FieldLabel><FieldDescription>开启后，息屏或锁屏时不弹出提醒窗口，也不响铃；下次点亮屏幕或解锁后，会显示“刚才息屏/锁屏的时候错过了以下提醒”并逐条列出。关闭后按原方式提醒；未看到的提醒仅能在提醒历史中查看。</FieldDescription></div><div class="settings-row-control"><Switch id="delay-when-inactive" :model-value="delayWhenInactive" @update:model-value="changeDelayWhenInactive" /></div></Field>
+        <Field class="settings-row"><div class="settings-row-copy"><FieldLabel>后台提醒状态</FieldLabel><FieldDescription role="status">{{ reminderRuntimeStatus }}</FieldDescription><FieldDescription>应用需要保持在系统托盘运行；系统睡眠期间不会唤醒电脑。开启息屏/锁屏延迟提醒时，恢复运行后会汇总期间错过的提醒。</FieldDescription></div></Field>
       </FieldGroup></CardContent></ScrollArea></Card>
       <Card v-else-if="section === 'notifications'" class="settings-panel"><ScrollArea class="settings-panel-scroll"><CardContent><FieldGroup>
         <Field class="settings-row"><div class="settings-row-copy"><FieldLabel>通知方式</FieldLabel><FieldDescription>软件内部提醒提供响铃窗口和操作按钮；Windows 系统通知显示在系统通知中心。</FieldDescription></div><div class="settings-row-control"><Select :model-value="notificationMode" @update:model-value="changeNotificationMode"><SelectTrigger class="preference-select"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem value="internal">软件内部提醒</SelectItem><SelectItem value="system">Windows 系统通知</SelectItem><SelectItem value="both">两者都要</SelectItem></SelectGroup></SelectContent></Select></div></Field>
         <Field class="settings-row"><div class="settings-row-copy"><FieldLabel>系统通知</FieldLabel><FieldDescription role="status">{{ store.notificationError || (notificationPermission === 'granted' ? '已获系统授权。' : notificationPermission === 'denied' ? '尚未获系统授权。' : '当前无法读取通知权限。') }}</FieldDescription></div><div class="settings-row-control flex gap-2"><Button v-if="notificationPermission === 'denied'" variant="secondary" @click="requestNotificationPermission">请求通知权限</Button><Button variant="secondary" @click="testNotification">发送测试通知</Button></div></Field>
-        <Field class="settings-row"><div class="settings-row-copy"><FieldLabel>默认提醒铃声</FieldLabel><FieldDescription role="status">{{ store.audioError || '用于未设置自定义音频的提醒；试听结束后自动停止。' }}</FieldDescription></div><div class="settings-row-control flex gap-2"><Select :model-value="builtInSound" @update:model-value="changeBuiltInSound"><SelectTrigger class="preference-select"><SelectValue /></SelectTrigger><SelectContent><SelectGroup><SelectItem v-for="item in builtInSounds" :key="item.id" :value="item.id">{{ item.name }}</SelectItem></SelectGroup></SelectContent></Select><Button variant="secondary" @click="testAudio">试听</Button></div></Field>
+        <Field class="settings-row"><div class="settings-row-copy"><FieldLabel>提醒铃声</FieldLabel><FieldDescription role="status">{{ store.audioError || '点击铃声名称设为默认；用于未设置自定义音频的提醒。试听 3 秒后自动停止，也可手动停止。' }}</FieldDescription></div><div class="col-span-full flex flex-col"><div v-for="item in builtInSounds" :key="item.id" class="flex min-w-0 items-center gap-2 border-b border-border py-2 last:border-b-0"><Button variant="ghost" class="min-w-0 flex-1 justify-start" :aria-pressed="builtInSound === item.id" @click="changeBuiltInSound(item.id)">{{ item.name }}<Badge v-if="builtInSound === item.id" variant="secondary" class="ml-2">默认</Badge></Button><Button variant="secondary" size="sm" :aria-label="`试听${item.name}`" @click="testAudio(item.id)">试听</Button><Button variant="secondary" size="sm" :disabled="previewingSound !== item.id" :aria-label="`停止试听${item.name}`" @click="stopAudioPreview">停止</Button></div></div></Field>
       </FieldGroup></CardContent></ScrollArea></Card>
       <Card v-else-if="section === 'data'" class="settings-panel"><ScrollArea class="settings-panel-scroll"><CardContent><FieldGroup>
         <Field class="settings-row"><div class="settings-row-copy"><FieldLabel>数据状态</FieldLabel><FieldDescription role="status">{{ store.error || (store.snapshot ? 'SQLite 数据库已连接，提醒与分组标签已在本机加载。' : '尚未连接本地数据库。') }}</FieldDescription></div></Field>
@@ -195,7 +221,7 @@ async function openDataRoot() { try { await invoke('open_data_root') } catch(e) 
       <Card v-else class="settings-panel">
         <ScrollArea class="settings-panel-scroll"><CardContent><div class="settings-about-row"><div class="about-details flex min-w-0 flex-col gap-4">
           <div class="flex items-center gap-4"><BrandLogo class="size-16" /><div><h2 class="text-xl font-semibold">onTime</h2><p class="text-sm text-muted-foreground">轻量桌面提醒工具</p><p class="mt-1 text-sm text-muted-foreground">要紧的事，到点提醒。</p></div></div>
-          <p v-if="checkingUpdate" role="status" aria-live="polite">正在检查稳定版和预览版…</p><p v-if="updateError" role="alert" class="text-sm text-destructive">{{ updateError }}</p>
+          <p v-if="checkingUpdate" role="status" aria-live="polite">正在检查稳定版和预览版…</p><p v-if="installResultMessage" role="alert" class="text-sm text-destructive">{{ installResultMessage }}</p><p v-if="updateError" role="alert" class="text-sm text-destructive">{{ updateError }}</p>
           <div><Badge variant="secondary">当前版本 {{ version }}</Badge></div><p v-if="update?.available" class="text-sm font-medium">最新版本 {{ update.latest }}</p>
           <p v-if="update" role="status" class="text-sm">{{ update.message }}</p><p v-if="update?.checkedAt" class="text-sm text-muted-foreground">{{ update.cached ? '上次成功检查' : '检查时间' }}：{{ new Date(update.checkedAt * 1000).toLocaleString('zh-CN') }}</p>
 

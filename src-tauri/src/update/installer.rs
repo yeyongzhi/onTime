@@ -100,7 +100,7 @@ pub fn take_update_result(app: AppHandle) -> Result<Option<InstallOutcome>, Stri
         message: if success {
             format!("已更新至 {}", receipt.version)
         } else {
-            "自动安装未完成，已重新打开应用，请重试更新或前往发布页下载安装。".into()
+            format!("自动安装未完成：{}。请重试更新或从发布页下载安装。", receipt.detail)
         },
     }))
 }

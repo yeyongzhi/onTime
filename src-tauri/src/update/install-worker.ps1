@@ -5,16 +5,28 @@ function Write-Receipt([string]$status, [string]$detail) {
     $receipt = @{ status=$status; version=$plan.version; detail=$detail; createdAt=[DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
     [IO.File]::WriteAllText($plan.receipt, ($receipt | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
 }
+function Test-ParentRunning {
+    try {
+        $process = [System.Diagnostics.Process]::GetProcessById([int]$plan.parentPid)
+        try { return -not $process.HasExited }
+        finally { $process.Dispose() }
+    } catch [System.ArgumentException] {
+        return $false
+    } catch [System.InvalidOperationException] {
+        # The process can exit between opening it and reading its state.
+        return $false
+    }
+}
 try {
     # Fail before closing the running application if the staged installer has changed.
     $hash = (Get-FileHash -LiteralPath $plan.installer -Algorithm SHA256).Hash
     if ($hash -ne $plan.sha256) { throw 'Installer checksum mismatch' }
     if (-not (Test-Path -LiteralPath $plan.executable -PathType Leaf)) { throw 'Installed executable is missing' }
     [IO.File]::WriteAllText($plan.ready, 'ready')
-    $parent = Get-Process -Id $plan.parentPid -ErrorAction SilentlyContinue
-    if ($parent) {
-        Wait-Process -Id $plan.parentPid -Timeout 120 -ErrorAction SilentlyContinue
-        if (Get-Process -Id $plan.parentPid -ErrorAction SilentlyContinue) { throw 'Application did not exit in time' }
+    $deadline = [DateTime]::UtcNow.AddSeconds(120)
+    while (Test-ParentRunning) {
+        if ([DateTime]::UtcNow -ge $deadline) { throw 'Application did not exit in time' }
+        Start-Sleep -Milliseconds 100
     }
     # The parent has fully exited, so SQLite and the installed executable are no longer held open.
     $hash = (Get-FileHash -LiteralPath $plan.installer -Algorithm SHA256).Hash
@@ -31,7 +43,7 @@ try {
 } catch {
     Write-Receipt 'failed' ([string]$_)
     # Relaunch only after the original process has exited; otherwise it is still able to show errors.
-    if (-not (Get-Process -Id $plan.parentPid -ErrorAction SilentlyContinue)) {
+    if (-not (Test-ParentRunning)) {
         if (Test-Path -LiteralPath $plan.executable -PathType Leaf) {
             Start-Process -FilePath $plan.executable -WorkingDirectory $plan.installDir -WindowStyle Hidden
         }

@@ -58,6 +58,51 @@ fn show_alert(app: &AppHandle) {
     .always_on_top(true)
     .build();
 }
+fn show_deferred_summary(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("deferred-summary") {
+        if !window.is_visible().unwrap_or(false) {
+            let _ = window.show();
+            let _ = window.emit("deferred-summary-refresh", ());
+        }
+        return;
+    }
+    let _ = tauri::WebviewWindowBuilder::new(app, "deferred-summary", tauri::WebviewUrl::App("index.html#/deferred-summary".into()))
+        .title("onTime · 错过的提醒")
+        .inner_size(540.0, 440.0)
+        .always_on_top(true)
+        .build();
+}
+
+#[tauri::command]
+pub fn get_deferred_reminders(state: tauri::State<Engine>) -> Result<Vec<Occurrence>, String> {
+    let guard = root(&state)?;
+    let mut items: Vec<_> = storage::snapshot(guard.as_ref().unwrap())?.occurrences
+        .into_iter().filter(|o| o.status == "deferred").collect();
+    items.sort_by_key(|o| (o.scheduled_at, o.title.clone()));
+    Ok(items)
+}
+
+#[tauri::command]
+pub fn acknowledge_deferred_reminders(app: AppHandle, state: tauri::State<Engine>) -> Result<(), String> {
+    let guard = root(&state)?;
+    let mut conn = storage::open(guard.as_ref().unwrap())?;
+    let tx = conn.transaction().map_err(error)?;
+    let mut stmt = tx.prepare("SELECT json FROM occurrences WHERE status='deferred'").map_err(error)?;
+    let items: Vec<String> = stmt.query_map([], |row| row.get(0)).map_err(error)?
+        .collect::<Result<_, _>>().map_err(error)?;
+    drop(stmt);
+    for json in items {
+        let mut occurrence: Occurrence = serde_json::from_str(&json).map_err(error)?;
+        occurrence.status = "skipped_expired".into();
+        occurrence.reason = "息屏/锁屏期间延迟提醒，已汇总告知".into();
+        persist_occurrence(&tx, &occurrence)?;
+    }
+    tx.commit().map_err(error)?;
+    drop(guard);
+    if let Some(window) = app.get_webview_window("deferred-summary") { let _ = window.hide(); }
+    notify(&app);
+    Ok(())
+}
 fn announce(app: &AppHandle, occurrences: &[Occurrence]) {
     if occurrences.is_empty() {
         return;
@@ -114,6 +159,9 @@ pub fn hide_active_alert(app: AppHandle, state: tauri::State<Engine>) -> Result<
 }
 #[tauri::command]
 pub fn show_active_alert(app: AppHandle, state: tauri::State<Engine>) -> Result<(), String> {
+    if crate::preferences::delay_when_inactive(&app) && crate::screen_state::inactive() {
+        return Err("息屏或锁屏期间已延迟提醒，解锁后查看汇总".into());
+    }
     let guard = root(&state)?;
     let snap = storage::snapshot(guard.as_ref().unwrap())?;
     if !snap
@@ -795,8 +843,22 @@ pub fn settle_occurrence(
     }
     let conn = storage::open(path)?;
     persist_occurrence(&conn, &o)?;
+    let remaining_ringing: i64 = conn.query_row(
+        "SELECT count(*) FROM occurrences WHERE status='ringing'",
+        [],
+        |row| row.get(0),
+    ).map_err(error)?;
     drop(guard);
-    state.audio.stop();
+    state.audio.stop_alert();
+    if remaining_ringing == 0 {
+        state.inspecting_snoozed.store(false, std::sync::atomic::Ordering::Relaxed);
+        if let Some(window) = app.get_webview_window("alert") {
+            window.hide().map_err(error)?;
+        }
+    } else {
+        // Keep the shared window open and start the next simultaneous reminder.
+        reconcile(&app, &state, Utc::now().timestamp(), false)?;
+    }
     notify(&app);
     Ok(())
 }
@@ -840,7 +902,7 @@ pub fn preview_sound(
     stop: bool,
 ) -> Result<(), String> {
     if stop {
-        state.audio.stop();
+        state.audio.stop_preview();
         return Ok(());
     }
     if !(0.0..=1.0).contains(&volume) {
@@ -967,9 +1029,11 @@ pub fn apply_clock_change(
     }
     Ok(())
 }
-fn reconcile_database(
+fn reconcile_database_with_policy(
     path: &std::path::Path,
     now: i64,
+    defer_due: bool,
+    catchup: bool,
 ) -> Result<(bool, Vec<Occurrence>, Vec<Occurrence>), String> {
     let snap = storage::snapshot(path)?;
     let mut conn = storage::open(path)?;
@@ -1012,7 +1076,7 @@ fn reconcile_database(
                 if exists != 0 {
                     continue;
                 }
-                let valid = eligible_for_catchup(due, now);
+                let valid = now - due <= 3 || (catchup && eligible_for_catchup(due, now));
                 let o = Occurrence {
                     context: Some(crate::domain::HistoryContext {
                         inferred: false,
@@ -1040,11 +1104,13 @@ fn reconcile_database(
                     alarm_id: a.id.clone(),
                     title: a.title.clone(),
                     scheduled_at: due,
-                    status: if valid { "ringing" } else { "skipped_expired" }.into(),
+                    status: if defer_due { "deferred" } else if valid { "ringing" } else { "skipped_expired" }.into(),
                     snooze_count: 0,
                     snooze_until: None,
                     started_at: valid.then_some(now),
-                    reason: if valid && now - due > 3 {
+                    reason: if defer_due {
+                        "息屏/锁屏期间延迟提醒"
+                    } else if valid && now - due > 3 {
                         "补响"
                     } else if valid {
                         "准时"
@@ -1054,7 +1120,9 @@ fn reconcile_database(
                     .into(),
                 };
                 persist_occurrence(&tx, &o)?;
-                if valid {
+                if defer_due {
+                    // The summary reads these occurrences after the session becomes usable.
+                } else if valid {
                     announce_list.push(o);
                 } else {
                     missed_list.push(o);
@@ -1073,24 +1141,33 @@ fn reconcile_database(
             continue;
         };
         if o.status == "snoozed" && o.snooze_until.is_some_and(|t| t <= now) {
-            let valid = eligible_for_catchup(o.snooze_until.unwrap(), now);
-            o.status = if valid { "ringing" } else { "skipped_expired" }.into();
+            let valid = now - o.snooze_until.unwrap() <= 3 || (catchup && eligible_for_catchup(o.snooze_until.unwrap(), now));
+            o.status = if defer_due { "deferred" } else if valid { "ringing" } else { "skipped_expired" }.into();
             o.started_at = valid.then_some(now);
-            o.reason = if valid {
+            o.reason = if defer_due {
+                "息屏/锁屏期间延迟提醒"
+            } else if valid {
                 "贪睡"
             } else {
                 "贪睡后过期，未补响"
             }
             .into();
             persist_occurrence(&tx, &o)?;
-            if valid {
+            if defer_due {
+                // Included in the deferred summary.
+            } else if valid {
                 announce_list.push(o.clone());
             } else {
                 missed_list.push(o.clone());
             }
             changed = true;
         }
-        if o.status == "ringing" && now - o.started_at.unwrap_or(now) >= i64::from(a.ring_seconds) {
+        if defer_due && o.status == "ringing" {
+            o.status = "deferred".into();
+            o.reason = "息屏/锁屏期间延迟提醒".into();
+            persist_occurrence(&tx, &o)?;
+            changed = true;
+        } else if o.status == "ringing" && now - o.started_at.unwrap_or(now) >= i64::from(a.ring_seconds) {
             o.status = "auto_stopped".into();
             persist_occurrence(&tx, &o)?;
             changed = true;
@@ -1140,12 +1217,20 @@ fn reconcile_database(
     Ok((changed, announce_list, missed_list))
 }
 
-pub fn reconcile(app: &AppHandle, state: &Engine, now: i64) -> Result<(), String> {
+#[cfg(test)]
+fn reconcile_database(path: &std::path::Path, now: i64) -> Result<(bool, Vec<Occurrence>, Vec<Occurrence>), String> {
+    reconcile_database_with_policy(path, now, false, true)
+}
+
+pub fn reconcile(app: &AppHandle, state: &Engine, now: i64, resumed: bool) -> Result<(), String> {
     let guard = state.root.lock().map_err(error)?;
     let Some(path) = guard.as_ref() else {
         return Ok(());
     };
-    let (changed, announce_list, missed_list) = reconcile_database(path, now)?;
+    let delay_enabled = crate::preferences::delay_when_inactive(app);
+    let inactive = crate::screen_state::inactive();
+    let defer_due = delay_enabled && (inactive || resumed);
+    let (changed, announce_list, missed_list) = reconcile_database_with_policy(path, now, defer_due, delay_enabled)?;
     let updated = storage::snapshot(path)?;
     let mut hidden = state.hidden_alerts.lock().map_err(error)?;
     hidden.retain(|id| {
@@ -1187,7 +1272,7 @@ pub fn reconcile(app: &AppHandle, state: &Engine, now: i64) -> Result<(), String
         }
     } else {
         state.audio.stop_alert();
-        if (!state
+        if (defer_due || !state
             .inspecting_snoozed
             .load(std::sync::atomic::Ordering::Relaxed)
             || !updated.occurrences.iter().any(|o| o.status == "snoozed"))
@@ -1201,7 +1286,9 @@ pub fn reconcile(app: &AppHandle, state: &Engine, now: i64) -> Result<(), String
     if !announce_list.is_empty() {
         announce(app, &announce_list);
     }
-    if !missed_list.is_empty() {
+    if !delay_enabled && !missed_list.is_empty() {
+        // With the option off, missed reminders remain in history only.
+    } else if !missed_list.is_empty() && !inactive {
         let title = format!("onTime · {} 个提醒过期未补响", missed_list.len());
         let body = if missed_list.len() == 1 {
             format!(
@@ -1216,6 +1303,11 @@ pub fn reconcile(app: &AppHandle, state: &Engine, now: i64) -> Result<(), String
             log::warn!("{message}");
             let _ = app.emit("notification-error", message);
         }
+    }
+    if !inactive && updated.occurrences.iter().any(|o| o.status == "deferred") {
+        show_deferred_summary(app);
+    } else if inactive && let Some(window) = app.get_webview_window("deferred-summary") {
+        let _ = window.hide();
     }
     if changed {
         notify(app);
@@ -1241,6 +1333,29 @@ mod scheduler_tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+    #[test]
+    fn inactive_reminder_is_saved_for_summary_without_ringing_and_not_duplicated() {
+        let f = Fixture::new(10000);
+        let (_, ringing, missed) = reconcile_database_with_policy(&f.0, 10000, true, true).unwrap();
+        assert!(ringing.is_empty() && missed.is_empty());
+        let snap = storage::snapshot(&f.0).unwrap();
+        assert_eq!(snap.occurrences.len(), 1);
+        assert_eq!(snap.occurrences[0].status, "deferred");
+        reconcile_database_with_policy(&f.0, 10001, false, true).unwrap();
+        assert_eq!(storage::snapshot(&f.0).unwrap().occurrences.len(), 1);
+    }
+    #[test]
+    fn locking_while_alarm_rings_defers_it_and_disabled_catchup_records_only_history() {
+        let f = Fixture::new(10000);
+        assert_eq!(reconcile_database_with_policy(&f.0, 10000, false, false).unwrap().1.len(), 1);
+        reconcile_database_with_policy(&f.0, 10001, true, true).unwrap();
+        assert_eq!(storage::snapshot(&f.0).unwrap().occurrences[0].status, "deferred");
+        let later = Fixture::new(10000);
+        let (_, ringing, missed) = reconcile_database_with_policy(&later.0, 10010, false, false).unwrap();
+        assert!(ringing.is_empty());
+        assert_eq!(missed.len(), 1);
+        assert_eq!(storage::snapshot(&later.0).unwrap().occurrences[0].status, "skipped_expired");
     }
     #[test]
     fn migration_copies_data_and_settings_and_preserves_source() {
